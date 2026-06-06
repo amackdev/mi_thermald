@@ -1,0 +1,12 @@
+[package]
+name = "mi_thermald"
+version = "2.1.0"
+edition = "2021"
+
+[dependencies]
+aes = "0.8"
+cbc = "0.1"
+libc = "0.2"
+
+[target.aarch64-linux-android]
+linker = "/home/amackpro/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
