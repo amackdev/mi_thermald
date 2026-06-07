@@ -22,6 +22,25 @@ pub fn cpuinfo_max_path(cpu: &str) -> String {
     }
 }
 
+pub fn cpuinfo_min_path(cpu: &str) -> String {
+    if cpu.starts_with("policy") || cpu.starts_with("cpu-cluster") {
+        let suffix = if let Some(p) = cpu.rfind('-') {
+            &cpu[p + 1..]
+        } else {
+            cpu
+        };
+        format!(
+            "/sys/devices/system/cpu/cpufreq/policy{}/cpuinfo_min_freq",
+            suffix
+        )
+    } else {
+        format!(
+            "/sys/devices/system/cpu/{}/cpufreq/cpuinfo_min_freq",
+            cpu
+        )
+    }
+}
+
 pub fn action_apply(a: &Action) -> i32 {
     match a.type_ {
         ActionType::CpuFreq => set_cpu_freq(&a.target, a.value),

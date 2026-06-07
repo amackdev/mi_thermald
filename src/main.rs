@@ -11,6 +11,7 @@ mod sensor;
 mod config;
 mod algorithm;
 mod action;
+mod ai;
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -60,10 +61,27 @@ extern "C" {
     fn setlogmask(mask: libc::c_int) -> libc::c_int;
 }
 
-#[allow(unused_variables)]
-pub fn property_get_str(_key: &str, default: &str) -> String {
-    // Stub: Android system properties are unavailable without libcutils.
-    // The daemon falls back to the default config paths.
+// Android property access via getprop command (portable, no libcutils dependency)
+pub fn property_get_str(key: &str, default: &str) -> String {
+    use std::process::Command;
+
+    // Execute getprop command to read property
+    let output = Command::new("getprop")
+        .arg(key.trim_end_matches('\0'))
+        .output()
+        .ok();
+
+    if let Some(output) = output {
+        if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_string();
+            if !value.is_empty() {
+                return value;
+            }
+        }
+    }
+
     default.to_string()
 }
 
@@ -73,7 +91,10 @@ pub fn property_get_str(_key: &str, default: &str) -> String {
 
 static G_TERM: AtomicBool = AtomicBool::new(false);
 static G_USR1: AtomicBool = AtomicBool::new(false);
-static FCC_VALUE: AtomicI32 = AtomicI32::new(0);
+pub(crate) static FCC_VALUE: AtomicI32 = AtomicI32::new(0);
+pub(crate) static CPU_FREQ0_TARGET: AtomicI32 = AtomicI32::new(0);
+pub(crate) static CPU_FREQ3_TARGET: AtomicI32 = AtomicI32::new(0);
+pub(crate) static CPU_FREQ7_TARGET: AtomicI32 = AtomicI32::new(0);
 
 extern "C" fn signal_term(_: libc::c_int) {
     G_TERM.store(true, Ordering::SeqCst);
@@ -103,6 +124,8 @@ struct Engine {
     current_scenario_idx: i32,
 
     log_level: i32,
+    ai_engine: Option<ai::AIEngine>,
+    native_controller: Option<ai::NativeController>,
 }
 
 impl Engine {
@@ -120,6 +143,8 @@ impl Engine {
             boot_completed: false,
             current_scenario_idx: 0,
             log_level: 6,
+            ai_engine: None,
+            native_controller: None,
         }
     }
 
@@ -170,13 +195,30 @@ impl Engine {
         let soc = property_get_str(MI_PROP_SOC_MODEL, "default");
         log_info!("thermald start soc={}", soc);
 
-        if self.load_thermal_map_impl(&soc) != 0 {
-            log_err!("no thermal config — exiting");
-            return -1;
-        }
+        let ai_prop = property_get_str("ro.vendor.mi_thermal_ai", "false");
+        let ai_enabled = ai_prop == "true" || ai_prop == "1";
 
-        log_info!("thermald started ({} sensors, {} instances)",
-            self.sensors.len(), self.instances.len());
+        if ai_enabled {
+            log_info!("AI-native mode: skipping OEM config, discovering hardware");
+
+            EngineDiscovery::sensor_init(&mut self.sensors);
+            self.virtual_sensors = EngineDiscovery::vsns_init(&mut self.sensors);
+
+            let mut nc = ai::NativeController::new();
+            nc.switch_scenario(self.current_scenario_idx);
+            let n_channels = nc.channels.len();
+            self.native_controller = Some(nc);
+
+            log_info!("AI-native started ({} sensors, {} cooling channels)",
+                self.sensors.len(), n_channels);
+        } else {
+            if self.load_thermal_map_impl(&soc) != 0 {
+                log_err!("no thermal config — exiting");
+                return -1;
+            }
+            log_info!("thermald started ({} sensors, {} instances)",
+                self.sensors.len(), self.instances.len());
+        }
 
         0
     }
@@ -205,6 +247,10 @@ impl Engine {
     }
 
     fn tick(&mut self) -> i32 {
+        if self.native_controller.is_some() {
+            return self.tick_native();
+        }
+
         let new_idx = EngineDiscovery::read_sconfig_idx();
         if new_idx >= 0 && new_idx != self.current_scenario_idx {
             log_info!("sconfig changed {} -> {}, reloading scenario",
@@ -228,6 +274,11 @@ impl Engine {
             }
         }
 
+        let mut ai_engine = self.ai_engine.take();
+        let ai_enabled = ai_engine.as_ref()
+            .map(|ai| ai.is_enabled())
+            .unwrap_or(false);
+
         for i in (0..self.instances.len()).rev() {
             if self.instances[i].algo == AlgoType::Virtual {
                 continue;
@@ -239,111 +290,166 @@ impl Engine {
 
             let t = self.sensors[sensor_idx].last_temp_mc.load(Ordering::Relaxed);
             let prev_level = self.instances[i].current_level;
-            let level = evaluate_instance(
+            let traditional_level = evaluate_instance(
                 &mut self.instances[i],
                 t,
                 &mut self.sic_states[i],
             );
 
+            let (level, ai_actions) = if ai_enabled {
+                let engine = ai_engine.as_mut().unwrap();
+                let state = engine.collect_state(&self.sensors, &self.instances[i], traditional_level);
+                let directive = engine.decide_action(&state, traditional_level, &self.instances[i]);
+                if directive.level != traditional_level {
+                    log_debug!("AI: instance {} trad={} ai={} temp={}",
+                        self.instances[i].name, traditional_level, directive.level, t);
+                }
+                (directive.level, Some(directive.actions))
+            } else {
+                (traditional_level, None)
+            };
+
+            if level != traditional_level {
+                self.instances[i].current_level = level;
+            }
+
             if !self.instances[i].actions.is_empty() {
-                let n_levels = self.instances[i].threshold.n_levels();
-                let effective_levels = if n_levels > 0 { n_levels + 1 } else { 1 };
-                let per_dev = self.instances[i].actions.len() / effective_levels;
-                let start = (level as usize) * per_dev;
-                let mut end = start + per_dev;
-                log_debug!("tick instance {} sensor={} temp={} level={}->{} n_actions={}/{}/{}",
-                    self.instances[i].name,
-                    sensor_idx, t, prev_level, level,
-                    self.instances[i].actions.len(), n_levels, effective_levels);
-                if start < self.instances[i].actions.len() {
-                    if end > self.instances[i].actions.len() {
-                        end = self.instances[i].actions.len();
-                    }
-
-                    if level == 0 {
-                        for j in start..end {
-                            if self.instances[i].actions[j].type_ == ActionType::CpuFreq
-                                && self.instances[i].actions[j].value == 0
-                            {
-                                let path = cpuinfo_max_path(&self.instances[i].actions[j].target);
-                                let v = sysfs::read_int(&path);
-                                self.instances[i].actions[j].value = if v > 0 { v } else { 3000000 };
-                            }
-                            if self.instances[i].actions[j].type_ == ActionType::CpuHotplug
-                                && self.instances[i].actions[j].value == 0
-                            {
-                                let cpu = &self.instances[i].actions[j].target;
-                                let n = if cpu.starts_with("hotplug_cpu") {
-                                    &cpu[11..]
-                                } else if cpu.starts_with("cpu") {
-                                    &cpu[3..]
-                                } else {
-                                    cpu
-                                };
-                                let path = format!("/sys/devices/system/cpu/cpu{}/online", n);
-                                let v = sysfs::read_int(&path);
-                                self.instances[i].actions[j].value = if v > 0 { v } else { 1 };
-                            }
-                            if self.instances[i].actions[j].type_ == ActionType::GpuBoost
-                                && self.instances[i].actions[j].value == 0
-                            {
-                                let table = sysfs::read_string(
-                                    "/sys/class/kgsl/kgsl-3d0/freq_table_mhz"
-                                ).unwrap_or_default();
-                                let max_mhz: i32 = table.split_whitespace()
-                                    .next()
-                                    .and_then(|s| s.parse().ok())
-                                    .unwrap_or(0);
-                                self.instances[i].actions[j].value =
-                                    if max_mhz > 0 { max_mhz * 1_000_000 } else { 1_100_000_000 };
-                            }
-                            if self.instances[i].actions[j].type_ == ActionType::Bcl
-                                && self.instances[i].actions[j].value == 0
-                            {
-                                let v = sysfs::read_int(
-                                    "/sys/class/power_supply/battery/constant_charge_current"
-                                );
-                                self.instances[i].actions[j].value = if v > 0 { v } else { 5000000 };
-                            }
-                            if self.instances[i].actions[j].type_ == ActionType::Fcc
-                                && self.instances[i].actions[j].value == 0
-                            {
-                                let mut v = sysfs::read_int(
-                                    "/sys/class/power_supply/battery/constant_charge_current_max"
-                                );
-                                if v <= 0 {
-                                    v = sysfs::read_int(
-                                        "/sys/class/power_supply/battery/constant_charge_current"
-                                    );
-                                }
-                                self.instances[i].actions[j].value = if v > 0 { v } else { 6000000 };
-                            }
-                        }
-                    }
-
-                    if self.instances[i].algo == AlgoType::Sic {
-                        let pid_v = self.instances[i].current_value;
-                        for j in start..end {
-                            self.instances[i].actions[j].value = pid_v;
-                        }
-                        FCC_VALUE.store(pid_v, Ordering::Relaxed);
-                    }
-
-                    for j in start..end {
-                        let a = &self.instances[i].actions[j];
+                if let Some(ref ai_acts) = ai_actions {
+                    for a in ai_acts {
                         if level != prev_level {
                             log_info!("apply {} level={} {:?}[{}] = {}",
                                 self.instances[i].name, level, a.type_, a.target, a.value);
                         }
                     }
-                    action_apply_multi(&self.instances[i].actions[start..end]);
+                    action_apply_multi(ai_acts);
+                } else {
+                    let n_levels = self.instances[i].threshold.n_levels();
+                    let effective_levels = if n_levels > 0 { n_levels + 1 } else { 1 };
+                    let per_dev = self.instances[i].actions.len() / effective_levels;
+                    let start = (level as usize) * per_dev;
+                    let mut end = start + per_dev;
+                    log_debug!("tick instance {} sensor={} temp={} level={}->{} n_actions={}/{}/{}",
+                        self.instances[i].name,
+                        sensor_idx, t, prev_level, level,
+                        self.instances[i].actions.len(), n_levels, effective_levels);
+                    if start < self.instances[i].actions.len() {
+                        if end > self.instances[i].actions.len() {
+                            end = self.instances[i].actions.len();
+                        }
+
+                        if level == 0 {
+                            for j in start..end {
+                                if self.instances[i].actions[j].type_ == ActionType::CpuFreq
+                                    && self.instances[i].actions[j].value == 0
+                                {
+                                    let path = cpuinfo_max_path(&self.instances[i].actions[j].target);
+                                    let v = sysfs::read_int(&path);
+                                    self.instances[i].actions[j].value = if v > 0 { v } else { 3000000 };
+                                }
+                                if self.instances[i].actions[j].type_ == ActionType::CpuHotplug
+                                    && self.instances[i].actions[j].value == 0
+                                {
+                                    let cpu = &self.instances[i].actions[j].target;
+                                    let n = if cpu.starts_with("hotplug_cpu") {
+                                        &cpu[11..]
+                                    } else if cpu.starts_with("cpu") {
+                                        &cpu[3..]
+                                    } else {
+                                        cpu
+                                    };
+                                    let path = format!("/sys/devices/system/cpu/cpu{}/online", n);
+                                    let v = sysfs::read_int(&path);
+                                    self.instances[i].actions[j].value = if v > 0 { v } else { 1 };
+                                }
+                                if self.instances[i].actions[j].type_ == ActionType::GpuBoost
+                                    && self.instances[i].actions[j].value == 0
+                                {
+                                    let table = sysfs::read_string(
+                                        "/sys/class/kgsl/kgsl-3d0/freq_table_mhz"
+                                    ).unwrap_or_default();
+                                    let max_mhz: i32 = table.split_whitespace()
+                                        .next()
+                                        .and_then(|s| s.parse().ok())
+                                        .unwrap_or(0);
+                                    self.instances[i].actions[j].value =
+                                        if max_mhz > 0 { max_mhz * 1_000_000 } else { 1_100_000_000 };
+                                }
+                                if self.instances[i].actions[j].type_ == ActionType::Bcl
+                                    && self.instances[i].actions[j].value == 0
+                                {
+                                    let v = sysfs::read_int(
+                                        "/sys/class/power_supply/battery/constant_charge_current"
+                                    );
+                                    self.instances[i].actions[j].value = if v > 0 { v } else { 5000000 };
+                                }
+                                if self.instances[i].actions[j].type_ == ActionType::Fcc
+                                    && self.instances[i].actions[j].value == 0
+                                {
+                                    let mut v = sysfs::read_int(
+                                        "/sys/class/power_supply/battery/constant_charge_current_max"
+                                    );
+                                    if v <= 0 {
+                                        v = sysfs::read_int(
+                                            "/sys/class/power_supply/battery/constant_charge_current"
+                                        );
+                                    }
+                                    self.instances[i].actions[j].value = if v > 0 { v } else { 6000000 };
+                                }
+                            }
+                        }
+
+                        if self.instances[i].algo == AlgoType::Sic {
+                            let pid_v = self.instances[i].current_value;
+                            for j in start..end {
+                                self.instances[i].actions[j].value = pid_v;
+                            }
+                            FCC_VALUE.store(pid_v, Ordering::Relaxed);
+                        }
+
+                        for j in start..end {
+                            let a = &self.instances[i].actions[j];
+                            if level != prev_level {
+                                log_info!("apply {} level={} {:?}[{}] = {}",
+                                    self.instances[i].name, level, a.type_, a.target, a.value);
+                            }
+                        }
+                        action_apply_multi(&self.instances[i].actions[start..end]);
+                    }
                 }
+            }
+        }
+
+        if let Some(mut engine) = ai_engine {
+            engine.end_tick(&self.sensors);
+            self.ai_engine = Some(engine);
+        }
+        0
+    }
+
+    fn tick_native(&mut self) -> i32 {
+        let new_idx = EngineDiscovery::read_sconfig_idx();
+        if new_idx >= 0 {
+            if let Some(ref mut nc) = self.native_controller {
+                nc.switch_scenario(new_idx);
+                self.current_scenario_idx = new_idx;
+            }
+        }
+
+        if let Some(ref mut nc) = self.native_controller {
+            if nc.is_enabled() {
+                nc.tick(&self.sensors);
+            } else if let Some(reason) = nc.disabled_reason() {
+                log_warn!("AI-native controller disabled: {}", reason);
             }
         }
         0
     }
 
     fn handle_config_change(&mut self) {
+        if self.native_controller.is_some() {
+            log_info!("config change ignored (AI-native mode)");
+            return;
+        }
         log_info!("thermal config changed, reloading");
         let soc = property_get_str(MI_PROP_SOC_MODEL, "default");
         self.load_thermal_map_impl(&soc);
@@ -422,6 +528,25 @@ fn thread_second_display() {
     let _v = sysfs::read_int("/sys/class/thermal/thermal_message/display_therm_temp");
 }
 
+fn thread_cpu_freq_writer() {
+    let paths = [
+        (0, "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq", &CPU_FREQ0_TARGET),
+        (3, "/sys/devices/system/cpu/cpufreq/policy3/scaling_max_freq", &CPU_FREQ3_TARGET),
+        (7, "/sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq", &CPU_FREQ7_TARGET),
+    ];
+    loop {
+        for &(_, path, target) in &paths {
+            let val = target.load(std::sync::atomic::Ordering::Relaxed);
+            if val > 0 {
+                crate::sensor::sysfs::write_int(path, val);
+            }
+        }
+        if G_TERM.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+    }
+}
+
 fn thread_fcc_writer() {
     let path = "/sys/class/power_supply/battery/constant_charge_current";
     loop {
@@ -429,7 +554,7 @@ fn thread_fcc_writer() {
         if fcc > 0 {
             sysfs::write_int(path, fcc);
         }
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(50));
         if G_TERM.load(Ordering::Relaxed) {
             break;
         }
@@ -584,6 +709,7 @@ fn main() {
     threads.push(thread::spawn(move || thread_second_board()));
     threads.push(thread::spawn(move || thread_second_display()));
 
+    threads.push(thread::spawn(|| thread_cpu_freq_writer()));
     threads.push(thread::spawn(|| thread_fcc_writer()));
 
     let s = shutdown.clone();
@@ -689,8 +815,16 @@ fn main() {
         let _ = t.join();
     }
     {
-        if let Ok(eng) = engine.lock() {
+        if let Ok(mut eng) = engine.lock() {
             eng.dump_state(MI_THERMALD_LAST_DUMP_FILE);
+            if let Some(ref mut ai) = eng.ai_engine {
+                ai.save_checkpoint();
+                log_info!("AI: checkpoint saved on shutdown");
+            }
+            if let Some(ref mut nc) = eng.native_controller {
+                nc.save_checkpoint();
+                log_info!("AI-native: checkpoint saved on shutdown");
+            }
         };
     }
     #[cfg(not(target_os = "android"))]
