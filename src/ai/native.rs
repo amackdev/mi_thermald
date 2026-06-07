@@ -375,26 +375,26 @@ impl NativeController {
 
         // Smooth linear transitions instead of step function
         let temp_c = batt_temp as f32 / 10.0;
-        let current = if temp_c >= 45.0 {
+        let current = if temp_c >= 48.0 {
             max / 10  // Emergency: 10%
+        } else if temp_c >= 45.0 {
+            // 45-48°C: linear ramp from 30% to 10%
+            let t = ((temp_c - 45.0) / 3.0).clamp(0.0, 1.0);
+            (max as f32 * (0.3 - 0.2 * t)) as i32
         } else if temp_c >= 42.0 {
-            // 42-45°C: linear ramp from 20% to 10%
+            // 42-45°C: linear ramp from 60% to 30%
             let t = ((temp_c - 42.0) / 3.0).clamp(0.0, 1.0);
-            (max as f32 * (0.2 - 0.1 * t)) as i32
-        } else if temp_c >= 38.0 {
-            // 38-42°C: linear ramp from 50% to 20%
-            let t = ((temp_c - 38.0) / 4.0).clamp(0.0, 1.0);
-            (max as f32 * (0.5 - 0.3 * t)) as i32
+            (max as f32 * (0.6 - 0.3 * t)) as i32
+        } else if temp_c >= 39.0 {
+            // 39-42°C: linear ramp from 85% to 60%
+            let t = ((temp_c - 39.0) / 3.0).clamp(0.0, 1.0);
+            (max as f32 * (0.85 - 0.25 * t)) as i32
         } else if temp_c >= 35.0 {
-            // 35-38°C: linear ramp from 80% to 50%
-            let t = ((temp_c - 35.0) / 3.0).clamp(0.0, 1.0);
-            (max as f32 * (0.8 - 0.3 * t)) as i32
-        } else if temp_c >= 30.0 {
-            // 30-35°C: linear ramp from 100% to 80%
-            let t = ((temp_c - 30.0) / 5.0).clamp(0.0, 1.0);
-            (max as f32 * (1.0 - 0.2 * t)) as i32
+            // 35-39°C: linear ramp from 100% to 85%
+            let t = ((temp_c - 35.0) / 4.0).clamp(0.0, 1.0);
+            (max as f32 * (1.0 - 0.15 * t)) as i32
         } else {
-            max  // <30°C: full speed
+            max  // <35°C: full speed
         };
 
         crate::FCC_VALUE.store(current, std::sync::atomic::Ordering::Relaxed);
