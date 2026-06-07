@@ -185,11 +185,11 @@ impl NativeController {
             } else {
                 self.sustained_load_ticks = self.sustained_load_ticks.saturating_sub(2);
             }
-            let is_heavy_load = self.sustained_load_ticks > 5;
+            let is_heavy_load = self.sustained_load_ticks >= 3;
 
             if is_heavy_load && final_action < 9 {
-                log_debug!("AI-native: sustained load {} ticks, action {} -> 9",
-                    self.sustained_load_ticks, final_action);
+                log_debug!("AI-native: load={:.2} sustained={} ticks, action {} -> 9",
+                    state.cpu_load, self.sustained_load_ticks, final_action);
                 final_action = 9;
             }
 
