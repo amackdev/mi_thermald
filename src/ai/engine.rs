@@ -6,6 +6,7 @@ use super::features::{FeatureExtractor, StateVector};
 use super::qtable::QTable;
 use super::rewards::RewardCalculator;
 use super::safety::SafetyMonitor;
+use super::workload::WorkloadDetector;
 
 const SAVE_INTERVAL_TICKS: u64 = 1000;
 
@@ -20,6 +21,7 @@ pub struct AIEngine {
     reward_calculator: RewardCalculator,
     safety_monitor: SafetyMonitor,
     data_collector: DataCollector,
+    workload_detector: WorkloadDetector,
 
     last_state: Option<StateVector>,
     last_directive: Option<AIDirective>,
@@ -39,6 +41,7 @@ impl AIEngine {
             reward_calculator: RewardCalculator::new(),
             safety_monitor: SafetyMonitor::new(),
             data_collector: DataCollector::new(),
+            workload_detector: WorkloadDetector::new(),
 
             last_state: None,
             last_directive: None,
@@ -94,7 +97,25 @@ impl AIEngine {
             };
         }
 
-        let state_array = self.feature_extractor.to_array(state);
+        // Detect workload mode
+        let gpu_freq_ratio = WorkloadDetector::read_gpu_freq_ratio();
+        let workload_mode = self.workload_detector.detect_workload(
+            state.cpu_load,
+            state.cpu_freq_ratio,
+            gpu_freq_ratio,
+            state.temp_variance,
+            state.screen_on > 0.5,
+        );
+
+        // Update safety and reward calculators with current workload
+        self.safety_monitor.set_workload_mode(workload_mode);
+        self.reward_calculator.set_workload_mode(workload_mode);
+
+        // Update state vector with workload mode
+        let mut state = state.clone();
+        state.workload_mode = workload_mode.to_normalized();
+
+        let state_array = self.feature_extractor.to_array(&state);
         let action = self.q_table.select_action(&state_array);
 
         let safe = self
@@ -136,7 +157,7 @@ impl AIEngine {
 
         let direct_actions = self.build_direct_actions(final_action, ai_level, instance);
 
-        self.last_state = Some(state.clone());
+        self.last_state = Some(state);
         self.last_directive = Some(AIDirective {
             level: ai_level,
             actions: direct_actions.clone(),

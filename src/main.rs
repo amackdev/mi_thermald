@@ -482,8 +482,8 @@ fn thread_poll_sensors(engine: Arc<Mutex<Engine>>, shutdown: Arc<AtomicBool>) {
             return;
         }
         let its = libc::itimerspec {
-            it_interval: libc::timespec { tv_sec: 1, tv_nsec: 0 },
-            it_value: libc::timespec { tv_sec: 1, tv_nsec: 0 },
+            it_interval: libc::timespec { tv_sec: 10, tv_nsec: 0 },
+            it_value: libc::timespec { tv_sec: 10, tv_nsec: 0 },
         };
         libc::timerfd_settime(tfd, 0, &its, std::ptr::null_mut());
         while !shutdown.load(Ordering::Relaxed) {
@@ -541,6 +541,7 @@ fn thread_cpu_freq_writer() {
                 crate::sensor::sysfs::write_int(path, val);
             }
         }
+        thread::sleep(Duration::from_millis(50));
         if G_TERM.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
@@ -549,12 +550,14 @@ fn thread_cpu_freq_writer() {
 
 fn thread_fcc_writer() {
     let path = "/sys/class/power_supply/battery/constant_charge_current";
+    let mut last_fcc = 0;
     loop {
         let fcc = FCC_VALUE.load(Ordering::Relaxed);
-        if fcc > 0 {
+        if fcc > 0 && fcc != last_fcc {
             sysfs::write_int(path, fcc);
+            last_fcc = fcc;
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(200));
         if G_TERM.load(Ordering::Relaxed) {
             break;
         }
@@ -703,23 +706,24 @@ fn main() {
     let s = shutdown.clone();
     threads.push(thread::spawn(move || thread_poll_sensors(e, s)));
 
-    let s = shutdown.clone();
-    threads.push(thread::spawn(move || thread_board_sensor(s)));
-
-    threads.push(thread::spawn(move || thread_second_board()));
-    threads.push(thread::spawn(move || thread_second_display()));
+    // Disabled: Unnecessary polling threads that waste CPU
+    // let s = shutdown.clone();
+    // threads.push(thread::spawn(move || thread_board_sensor(s)));
+    // threads.push(thread::spawn(move || thread_second_board()));
+    // threads.push(thread::spawn(move || thread_second_display()));
 
     threads.push(thread::spawn(|| thread_cpu_freq_writer()));
     threads.push(thread::spawn(|| thread_fcc_writer()));
 
-    let s = shutdown.clone();
-    threads.push(thread::spawn(move || thread_charger_temp(s)));
+    // Disabled: Charger temp polling - useless node
+    // let s = shutdown.clone();
+    // threads.push(thread::spawn(move || thread_charger_temp(s)));
 
-    let s = shutdown.clone();
-    threads.push(thread::spawn(move || thread_cpu_nolimit(s)));
-
-    let s = shutdown.clone();
-    threads.push(thread::spawn(move || thread_dynamic_ttj(s)));
+    // Disabled: Unnecessary monitoring threads
+    // let s = shutdown.clone();
+    // threads.push(thread::spawn(move || thread_cpu_nolimit(s)));
+    // let s = shutdown.clone();
+    // threads.push(thread::spawn(move || thread_dynamic_ttj(s)));
 
     let s = shutdown.clone();
     let tx = reload_tx;
@@ -746,8 +750,8 @@ fn main() {
             return;
         }
         let ts = libc::itimerspec {
-            it_interval: libc::timespec { tv_sec: 1, tv_nsec: 0 },
-            it_value: libc::timespec { tv_sec: 1, tv_nsec: 0 },
+            it_interval: libc::timespec { tv_sec: 10, tv_nsec: 0 },
+            it_value: libc::timespec { tv_sec: 10, tv_nsec: 0 },
         };
         libc::timerfd_settime(timer_fd, 0, &ts, std::ptr::null_mut());
 

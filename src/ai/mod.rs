@@ -9,6 +9,7 @@ mod safety;
 mod data_collector;
 mod engine;
 mod native;
+mod workload;
 
 pub use engine::AIEngine;
 pub use native::NativeController;
@@ -16,3 +17,5 @@ pub use native::NativeController;
 pub use features::StateVector;
 #[allow(unused_imports)]
 pub use qtable::QTable;
+#[allow(unused_imports)]
+pub use workload::{WorkloadDetector, WorkloadMode};

@@ -19,6 +19,7 @@ struct Experience {
     t_ambient: f32,
     dt_cpu: f32,
     dt_board: f32,
+    dt_battery: f32,
     battery_soc: f32,
     is_charging: f32,
     screen_on: f32,
@@ -36,6 +37,8 @@ struct Experience {
     t_gpu: f32,
     t_charger: f32,
     battery_current: f32,
+    cpu_load: f32,
+    workload_mode: f32,
     action: u8,
     reward: f32,
 }
@@ -76,6 +79,7 @@ impl DataCollector {
             t_ambient: state.t_ambient,
             dt_cpu: state.dt_cpu,
             dt_board: state.dt_board,
+            dt_battery: state.dt_battery,
             battery_soc: state.battery_soc,
             is_charging: state.is_charging,
             screen_on: state.screen_on,
@@ -93,6 +97,8 @@ impl DataCollector {
             t_gpu: state.t_gpu,
             t_charger: state.t_charger,
             battery_current: state.battery_current,
+            cpu_load: state.cpu_load,
+            workload_mode: state.workload_mode,
             action,
             reward,
         };

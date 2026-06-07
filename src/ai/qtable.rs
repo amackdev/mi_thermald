@@ -20,7 +20,7 @@ pub struct QTable {
 
 impl QTable {
     pub fn new() -> Self {
-        let tile_coding = TileCoding::new(8, 4, 25);
+        let tile_coding = TileCoding::new(8, 4, 27);
         let table_size = tile_coding.table_size();
         QTable {
             weights: vec![0.0; table_size],

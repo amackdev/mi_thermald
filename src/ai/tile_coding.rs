@@ -14,7 +14,7 @@ pub struct TileCoding {
 
 impl Default for TileCoding {
     fn default() -> Self {
-        TileCoding::new(8, 4, 25)
+        TileCoding::new(8, 4, 27)
     }
 }
 
@@ -89,8 +89,8 @@ mod tests {
 
     #[test]
     fn test_tile_coding_basic() {
-        let tc = TileCoding::new(8, 4, 25);
-        let state = vec![0.5; 25]; // All features at 0.5
+        let tc = TileCoding::new(8, 4, 27);
+        let state = vec![0.5; 27]; // All features at 0.5
         let tiles = tc.get_tiles(&state, 3);
 
         assert_eq!(tiles.len(), 8); // One tile per tiling
@@ -102,11 +102,11 @@ mod tests {
 
     #[test]
     fn test_tile_coding_bounds() {
-        let tc = TileCoding::new(8, 4, 25);
+        let tc = TileCoding::new(8, 4, 27);
 
         // Test edge cases
-        let state_min = vec![0.0; 25];
-        let state_max = vec![1.0; 25];
+        let state_min = vec![0.0; 27];
+        let state_max = vec![1.0; 27];
 
         let tiles_min = tc.get_tiles(&state_min, 0);
         let tiles_max = tc.get_tiles(&state_max, 0);
@@ -120,8 +120,8 @@ mod tests {
 
     #[test]
     fn test_action_discrimination() {
-        let tc = TileCoding::new(8, 4, 25);
-        let state = vec![0.5; 25];
+        let tc = TileCoding::new(8, 4, 27);
+        let state = vec![0.5; 27];
 
         let tiles_action0 = tc.get_tiles(&state, 0);
         let tiles_action1 = tc.get_tiles(&state, 1);

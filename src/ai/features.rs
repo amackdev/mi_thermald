@@ -4,7 +4,7 @@
 use crate::types::{Sensor, Instance};
 use std::sync::atomic::Ordering;
 
-/// 24-dimensional state vector for Q-learning
+/// 27-dimensional state vector for Q-learning
 #[derive(Clone, Debug)]
 pub struct StateVector {
     // Temperature features (normalized 0-1, where 1 = 100°C)
@@ -17,6 +17,7 @@ pub struct StateVector {
     // Temperature derivatives (°C per second, normalized -1 to 1)
     pub dt_cpu: f32,         // CPU temperature rate of change
     pub dt_board: f32,       // Board temperature rate of change
+    pub dt_battery: f32,     // Battery temperature rate of change
 
     // Device context (normalized 0-1)
     pub battery_soc: f32,    // Battery state of charge (0-100%)
@@ -55,6 +56,9 @@ pub struct StateVector {
 
     // CPU utilization
     pub cpu_load: f32,       // CPU utilization 0-1 from /proc/stat
+
+    // Workload context
+    pub workload_mode: f32,  // 0=idle, 0.25=light, 0.5=moderate, 0.75=gaming, 1.0=benchmark
 }
 
 pub struct FeatureExtractor {
@@ -66,6 +70,7 @@ pub struct FeatureExtractor {
     // Previous state for derivatives
     prev_cpu_temp: f32,
     prev_board_temp: f32,
+    prev_battery_temp: f32,
 
     history_size: usize,
 
@@ -82,6 +87,7 @@ impl FeatureExtractor {
             level_history: Vec::new(),
             prev_cpu_temp: 0.0,
             prev_board_temp: 0.0,
+            prev_battery_temp: 0.0,
             history_size: 10,
             prev_cpu_idle: 0,
             prev_cpu_total: 0,
@@ -96,8 +102,10 @@ impl FeatureExtractor {
         // Compute derivatives
         let dt_cpu = (t_cpu_max - self.prev_cpu_temp).clamp(-10.0, 10.0) / 10.0;
         let dt_board = (t_board_max - self.prev_board_temp).clamp(-10.0, 10.0) / 10.0;
+        let dt_battery = (t_battery - self.prev_battery_temp).clamp(-5.0, 5.0) / 5.0;
         self.prev_cpu_temp = t_cpu_max;
         self.prev_board_temp = t_board_max;
+        self.prev_battery_temp = t_battery;
 
         // Update history buffers
         self.cpu_temp_history.push(t_cpu_max);
@@ -145,6 +153,7 @@ impl FeatureExtractor {
             t_ambient,
             dt_cpu,
             dt_board,
+            dt_battery,
             battery_soc,
             is_charging,
             screen_on,
@@ -163,6 +172,7 @@ impl FeatureExtractor {
             t_charger,
             battery_current,
             cpu_load,
+            workload_mode: 0.5, // Will be updated by engine
         }
     }
 
@@ -330,6 +340,7 @@ impl FeatureExtractor {
             state.t_ambient,
             state.dt_cpu,
             state.dt_board,
+            state.dt_battery,
             state.battery_soc,
             state.is_charging,
             state.screen_on,
@@ -348,6 +359,7 @@ impl FeatureExtractor {
             state.t_charger,
             state.battery_current,
             state.cpu_load,
+            state.workload_mode,
         ]
     }
 }

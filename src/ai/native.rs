@@ -172,7 +172,8 @@ impl NativeController {
             let action = model.q_table.select_action(&state_array);
             let safe = self.safety_monitor.check_action(action, &[], model.tick_count);
             let mut final_action = if safe { action } else { 3u8 };
-            // override: if CPU load is high, force max performance
+
+            // Override: if CPU load is high, force max performance
             if state.cpu_load > 0.4 && final_action < 9 {
                 log_debug!("AI-native: cpu_load={:.2} override action {} -> 9", state.cpu_load, final_action);
                 final_action = 9;
@@ -367,28 +368,38 @@ impl NativeController {
             return;
         }
 
-        // Only update if temp changed > 2°C (200 = 20.0°C in tenths)
-        if (batt_temp - self.last_charge_temp).abs() < 200 {
-            return;
-        }
+        // Update every tick for smooth control (removed hysteresis check)
         self.last_charge_temp = batt_temp;
 
-        // temp is in tenths of °C: 350 = 35.0°C
         let max = self.charge_max_val;
-        let current = if batt_temp > 450 {
-            max / 10        // >45°C: minimum
-        } else if batt_temp > 400 {
-            max * 3 / 10    // 40-45°C: 30%
-        } else if batt_temp > 350 {
-            max * 6 / 10    // 35-40°C: 60%
+
+        // Smooth linear transitions instead of step function
+        let temp_c = batt_temp as f32 / 10.0;
+        let current = if temp_c >= 45.0 {
+            max / 10  // Emergency: 10%
+        } else if temp_c >= 42.0 {
+            // 42-45°C: linear ramp from 20% to 10%
+            let t = ((temp_c - 42.0) / 3.0).clamp(0.0, 1.0);
+            (max as f32 * (0.2 - 0.1 * t)) as i32
+        } else if temp_c >= 38.0 {
+            // 38-42°C: linear ramp from 50% to 20%
+            let t = ((temp_c - 38.0) / 4.0).clamp(0.0, 1.0);
+            (max as f32 * (0.5 - 0.3 * t)) as i32
+        } else if temp_c >= 35.0 {
+            // 35-38°C: linear ramp from 80% to 50%
+            let t = ((temp_c - 35.0) / 3.0).clamp(0.0, 1.0);
+            (max as f32 * (0.8 - 0.3 * t)) as i32
+        } else if temp_c >= 30.0 {
+            // 30-35°C: linear ramp from 100% to 80%
+            let t = ((temp_c - 30.0) / 5.0).clamp(0.0, 1.0);
+            (max as f32 * (1.0 - 0.2 * t)) as i32
         } else {
-            max             // <35°C: full speed
+            max  // <30°C: full speed
         };
 
         crate::FCC_VALUE.store(current, std::sync::atomic::Ordering::Relaxed);
-        log_info!("AI-native: charge_current = {} (battery {}°C)",
-            current, batt_temp / 10);
-        // Also write once directly for immediate effect; writer thread persists it every 200ms
+        log_debug!("AI-native: charge_current = {} (battery {:.1}°C)", current, temp_c);
+
         let path = "/sys/class/power_supply/battery/constant_charge_current";
         let _ = crate::sensor::sysfs::write_int(path, current);
     }
