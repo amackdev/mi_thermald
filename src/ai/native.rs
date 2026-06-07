@@ -56,6 +56,7 @@ pub struct NativeController {
     disabled_reason: Option<String>,
     last_charge_temp: i32,
     charge_max_val: i32,
+    sustained_load_ticks: u64,
 }
 
 impl NativeController {
@@ -69,6 +70,7 @@ impl NativeController {
             safety_monitor: SafetyMonitor::new(),
             data_collector: DataCollector::new(),
             workload_detector: WorkloadDetector::new(),
+            sustained_load_ticks: 0,
             enabled: true,
             disabled_reason: None,
             last_charge_temp: -999,
@@ -176,20 +178,18 @@ impl NativeController {
             let safe = self.safety_monitor.check_action(action, &[], model.tick_count);
             let mut final_action = if safe { action } else { 3u8 };
 
-            // Detect sustained heavy workload (gaming/benchmark)
-            let gpu_freq_ratio = WorkloadDetector::read_gpu_freq_ratio();
-            let workload_mode = self.workload_detector.detect_workload(
-                state.cpu_load,
-                state.cpu_freq_ratio,
-                gpu_freq_ratio,
-                state.temp_variance,
-                state.screen_on > 0.5,
-            );
-            let is_heavy_load = workload_mode == WorkloadMode::Gaming
-                || workload_mode == WorkloadMode::Benchmark;
+            // Sustained load detection: cpu_load is scheduler busyness,
+            // independent of frequency — works even if we're capping.
+            if state.cpu_load > 0.5 {
+                self.sustained_load_ticks += 1;
+            } else {
+                self.sustained_load_ticks = self.sustained_load_ticks.saturating_sub(2);
+            }
+            let is_heavy_load = self.sustained_load_ticks > 5;
 
             if is_heavy_load && final_action < 9 {
-                log_debug!("AI-native: {:?} override action {} -> 9", workload_mode, final_action);
+                log_debug!("AI-native: sustained load {} ticks, action {} -> 9",
+                    self.sustained_load_ticks, final_action);
                 final_action = 9;
             }
 
