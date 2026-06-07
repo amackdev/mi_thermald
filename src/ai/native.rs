@@ -8,6 +8,7 @@ use super::features::{FeatureExtractor, StateVector};
 use super::qtable::QTable;
 use super::rewards::RewardCalculator;
 use super::safety::SafetyMonitor;
+use super::workload::{WorkloadDetector, WorkloadMode};
 
 const SAVE_INTERVAL_TICKS: u64 = 1000;
 const DATA_DIR: &str = "/data/local/tmp/ai_data";
@@ -50,6 +51,7 @@ pub struct NativeController {
     reward_calculator: RewardCalculator,
     safety_monitor: SafetyMonitor,
     data_collector: DataCollector,
+    workload_detector: WorkloadDetector,
     enabled: bool,
     disabled_reason: Option<String>,
     last_charge_temp: i32,
@@ -66,6 +68,7 @@ impl NativeController {
             reward_calculator: RewardCalculator::new(),
             safety_monitor: SafetyMonitor::new(),
             data_collector: DataCollector::new(),
+            workload_detector: WorkloadDetector::new(),
             enabled: true,
             disabled_reason: None,
             last_charge_temp: -999,
@@ -173,15 +176,26 @@ impl NativeController {
             let safe = self.safety_monitor.check_action(action, &[], model.tick_count);
             let mut final_action = if safe { action } else { 3u8 };
 
-            // Override: if CPU load is high, force max performance
-            if state.cpu_load > 0.4 && final_action < 9 {
-                log_debug!("AI-native: cpu_load={:.2} override action {} -> 9", state.cpu_load, final_action);
+            // Detect sustained heavy workload (gaming/benchmark)
+            let gpu_freq_ratio = WorkloadDetector::read_gpu_freq_ratio();
+            let workload_mode = self.workload_detector.detect_workload(
+                state.cpu_load,
+                state.cpu_freq_ratio,
+                gpu_freq_ratio,
+                state.temp_variance,
+                state.screen_on > 0.5,
+            );
+            let is_heavy_load = workload_mode == WorkloadMode::Gaming
+                || workload_mode == WorkloadMode::Benchmark;
+
+            if is_heavy_load && final_action < 9 {
+                log_debug!("AI-native: {:?} override action {} -> 9", workload_mode, final_action);
                 final_action = 9;
             }
 
             // Battery temp throttle: clamp action based on battery temperature
             // Only applies when NOT under heavy load (gaming/benchmark)
-            if state.cpu_load <= 0.4 {
+            if !is_heavy_load {
                 let batt_temp = crate::sensor::sysfs::read_int(
                     "/sys/class/power_supply/battery/temp"
                 );
