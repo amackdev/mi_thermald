@@ -180,25 +180,28 @@ impl NativeController {
             }
 
             // Battery temp throttle: clamp action based on battery temperature
-            let batt_temp = crate::sensor::sysfs::read_int(
-                "/sys/class/power_supply/battery/temp"
-            );
-            let batt_temp_c = batt_temp as f32 / 10.0;
-            if batt_temp >= 0 {
-                let temp_action = if batt_temp_c < 35.0 {
-                    9
-                } else if batt_temp_c < 38.0 {
-                    7
-                } else if batt_temp_c < 40.0 {
-                    6
-                } else if batt_temp_c < 42.0 {
-                    4
-                } else {
-                    0
-                };
-                if temp_action < final_action {
-                    log_debug!("AI-native: batt={:.1}°C override action {} -> {}", batt_temp_c, final_action, temp_action);
-                    final_action = temp_action;
+            // Only applies when NOT under heavy load (gaming/benchmark)
+            if state.cpu_load <= 0.4 {
+                let batt_temp = crate::sensor::sysfs::read_int(
+                    "/sys/class/power_supply/battery/temp"
+                );
+                let batt_temp_c = batt_temp as f32 / 10.0;
+                if batt_temp >= 0 {
+                    let temp_action = if batt_temp_c < 35.0 {
+                        9
+                    } else if batt_temp_c < 38.0 {
+                        7
+                    } else if batt_temp_c < 40.0 {
+                        6
+                    } else if batt_temp_c < 42.0 {
+                        4
+                    } else {
+                        0
+                    };
+                    if temp_action < final_action {
+                        log_debug!("AI-native: batt={:.1}°C override action {} -> {}", batt_temp_c, final_action, temp_action);
+                        final_action = temp_action;
+                    }
                 }
             }
 
