@@ -8,7 +8,7 @@ use super::features::{FeatureExtractor, StateVector};
 use super::qtable::QTable;
 use super::rewards::RewardCalculator;
 use super::safety::SafetyMonitor;
-use super::workload::{WorkloadDetector, WorkloadMode};
+use super::workload::WorkloadDetector;
 
 const SAVE_INTERVAL_TICKS: u64 = 1000;
 const DATA_DIR: &str = "/data/local/tmp/ai_data";
@@ -183,13 +183,15 @@ impl NativeController {
             if state.cpu_load > 0.5 {
                 self.sustained_load_ticks += 1;
             } else {
-                self.sustained_load_ticks = self.sustained_load_ticks.saturating_sub(2);
+                self.sustained_load_ticks = self.sustained_load_ticks.saturating_sub(1);
             }
             let is_heavy_load = self.sustained_load_ticks >= 3;
 
+            log_debug!("AI-native: load={:.2} sustained={} heavy={} action={}",
+                state.cpu_load, self.sustained_load_ticks, is_heavy_load, final_action);
+
             if is_heavy_load && final_action < 9 {
-                log_debug!("AI-native: load={:.2} sustained={} ticks, action {} -> 9",
-                    state.cpu_load, self.sustained_load_ticks, final_action);
+                log_debug!("AI-native: sustained override {} -> 9", final_action);
                 final_action = 9;
             }
 
