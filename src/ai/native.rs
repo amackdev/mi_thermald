@@ -57,6 +57,7 @@ pub struct NativeController {
     last_charge_temp: i32,
     charge_max_val: i32,
     sustained_load_ticks: u64,
+    idle_load_ticks: u64,
 }
 
 impl NativeController {
@@ -71,6 +72,7 @@ impl NativeController {
             data_collector: DataCollector::new(),
             workload_detector: WorkloadDetector::new(),
             sustained_load_ticks: 0,
+            idle_load_ticks: 0,
             enabled: true,
             disabled_reason: None,
             last_charge_temp: -999,
@@ -182,8 +184,12 @@ impl NativeController {
             // independent of frequency — works even if we're capping.
             if state.cpu_load > 0.44 {
                 self.sustained_load_ticks = self.sustained_load_ticks.saturating_add(1).min(100);
+                self.idle_load_ticks = 0;
             } else {
-                self.sustained_load_ticks = 0;
+                self.idle_load_ticks += 1;
+                if self.idle_load_ticks >= 3 {
+                    self.sustained_load_ticks = 0;
+                }
             }
             let is_heavy_load = self.sustained_load_ticks >= 3;
 
@@ -196,14 +202,24 @@ impl NativeController {
             }
 
             // Battery temp throttle: clamp action based on battery temperature
-            // Only applies when NOT under heavy load (gaming/benchmark)
-            if !is_heavy_load {
-                let batt_temp = crate::sensor::sysfs::read_int(
-                    "/sys/class/power_supply/battery/temp"
-                );
-                let batt_temp_c = batt_temp as f32 / 10.0;
-                if batt_temp >= 0 {
-                    let temp_action = if batt_temp_c < 35.0 {
+            // During heavy load use gentler limits so gaming doesn't crash to minimum
+            let batt_temp = crate::sensor::sysfs::read_int(
+                "/sys/class/power_supply/battery/temp"
+            );
+            let batt_temp_c = batt_temp as f32 / 10.0;
+            if batt_temp >= 0 {
+                let temp_action = if is_heavy_load {
+                    if batt_temp_c < 40.0 {
+                        9
+                    } else if batt_temp_c < 42.0 {
+                        8
+                    } else if batt_temp_c < 44.0 {
+                        6
+                    } else {
+                        5
+                    }
+                } else {
+                    if batt_temp_c < 35.0 {
                         9
                     } else if batt_temp_c < 38.0 {
                         7
@@ -213,11 +229,11 @@ impl NativeController {
                         4
                     } else {
                         0
-                    };
-                    if temp_action < final_action {
-                        log_debug!("AI-native: batt={:.1}°C override action {} -> {}", batt_temp_c, final_action, temp_action);
-                        final_action = temp_action;
                     }
+                };
+                if temp_action < final_action {
+                    log_debug!("AI-native: batt={:.1}°C override action {} -> {}", batt_temp_c, final_action, temp_action);
+                    final_action = temp_action;
                 }
             }
 
