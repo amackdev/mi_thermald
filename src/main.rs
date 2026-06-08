@@ -482,8 +482,8 @@ fn thread_poll_sensors(engine: Arc<Mutex<Engine>>, shutdown: Arc<AtomicBool>) {
             return;
         }
         let its = libc::itimerspec {
-            it_interval: libc::timespec { tv_sec: 10, tv_nsec: 0 },
-            it_value: libc::timespec { tv_sec: 10, tv_nsec: 0 },
+            it_interval: libc::timespec { tv_sec: 1, tv_nsec: 0 },
+            it_value: libc::timespec { tv_sec: 1, tv_nsec: 0 },
         };
         libc::timerfd_settime(tfd, 0, &its, std::ptr::null_mut());
         while !shutdown.load(Ordering::Relaxed) {
@@ -750,8 +750,8 @@ fn main() {
             return;
         }
         let ts = libc::itimerspec {
-            it_interval: libc::timespec { tv_sec: 10, tv_nsec: 0 },
-            it_value: libc::timespec { tv_sec: 10, tv_nsec: 0 },
+            it_interval: libc::timespec { tv_sec: 1, tv_nsec: 0 },
+            it_value: libc::timespec { tv_sec: 1, tv_nsec: 0 },
         };
         libc::timerfd_settime(timer_fd, 0, &ts, std::ptr::null_mut());
 

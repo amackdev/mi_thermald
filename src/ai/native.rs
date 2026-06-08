@@ -180,10 +180,10 @@ impl NativeController {
 
             // Sustained load detection: cpu_load is scheduler busyness,
             // independent of frequency — works even if we're capping.
-            if state.cpu_load > 0.5 {
-                self.sustained_load_ticks += 1;
+            if state.cpu_load > 0.44 {
+                self.sustained_load_ticks = self.sustained_load_ticks.saturating_add(1).min(100);
             } else {
-                self.sustained_load_ticks = self.sustained_load_ticks.saturating_sub(1);
+                self.sustained_load_ticks = 0;
             }
             let is_heavy_load = self.sustained_load_ticks >= 3;
 
