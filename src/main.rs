@@ -197,6 +197,7 @@ impl Engine {
 
         let ai_prop = property_get_str("ro.vendor.mi_thermal_ai", "false");
         let ai_enabled = ai_prop == "true" || ai_prop == "1";
+        let ai_engine_enabled = ai_prop == "engine";
 
         if ai_enabled {
             log_info!("AI-native mode: skipping OEM config, discovering hardware");
@@ -218,6 +219,18 @@ impl Engine {
             }
             log_info!("thermald started ({} sensors, {} instances)",
                 self.sensors.len(), self.instances.len());
+
+            if ai_engine_enabled {
+                match ai::AIEngine::new() {
+                    Ok(engine) => {
+                        self.ai_engine = Some(engine);
+                        log_info!("AI Engine enabled (augmenting traditional config)");
+                    }
+                    Err(e) => {
+                        log_warn!("AI Engine failed to initialize: {}", e);
+                    }
+                }
+            }
         }
 
         0

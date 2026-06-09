@@ -57,7 +57,7 @@ pub fn algo_sic(inst: &Instance, temp_mc: i32, state: &mut SicState) -> i32 {
     let delta_num = ks_val * (ek_i - 2 * ek_1 + ek_2)
                   + kc_val * (ek_i - ek_1)
                   + ki_val * ek_i;
-    let delta = delta_num / 1000;
+    let delta = (delta_num as f64 / 1000.0).round() as i64;
 
     state.ek_2 = state.ek_1;
     state.ek_1 = ek;

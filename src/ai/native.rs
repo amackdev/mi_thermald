@@ -11,7 +11,7 @@ use super::safety::SafetyMonitor;
 use super::workload::WorkloadDetector;
 
 const SAVE_INTERVAL_TICKS: u64 = 1000;
-const DATA_DIR: &str = "/data/local/tmp/ai_data";
+const DATA_DIR: &str = "/data/vendor/thermal/ai_data";
 
 pub struct CoolingChannel {
     pub name: String,
@@ -254,7 +254,7 @@ impl NativeController {
         self.apply_action(final_action);
 
         if let (Some(ref ls), Some(la)) = (prev_state, prev_action) {
-            let reward = self.reward_calculator.compute_reward(ls, 0, 0);
+            let reward = self.reward_calculator.compute_reward(ls, la as i32, final_action as i32);
             let state_array = self.feature_extractor.to_array(ls);
             let next_array = self.feature_extractor.to_array(&state);
 
@@ -416,6 +416,22 @@ impl NativeController {
             false
         };
         if !charging {
+            return;
+        }
+
+        // Detect charger type
+        let usb_type = crate::sensor::sysfs::read_string(
+            "/sys/class/power_supply/usb/type"
+        ).unwrap_or_default();
+        let fast_charger = usb_type.trim() == "USB_PD" || usb_type.trim() == "USB_HVDCP";
+
+        // Non-fast chargers (DCP, regular USB): fixed slow rate, no temp reduction needed
+        if !fast_charger {
+            let slow_rate = 3000000; // 3A constant
+            crate::FCC_VALUE.store(slow_rate, std::sync::atomic::Ordering::Relaxed);
+            log_debug!("AI-native: charge_current = {} (slow charger type={})", slow_rate, usb_type.trim());
+            let path = "/sys/class/power_supply/battery/constant_charge_current";
+            let _ = crate::sensor::sysfs::write_int(path, slow_rate);
             return;
         }
 

@@ -225,8 +225,10 @@ impl FeatureExtractor {
             if sensor.name == "BAT_SOC" {
                 soc = (value as f32 / 100.0).clamp(0.0, 1.0);
             } else if sensor.name.contains("battery_current") {
-                current = (value as f32 / 6000000.0).clamp(0.0, 1.0); // Normalize to max 6A
-                is_charging = if value > 0 { 1.0 } else { 0.0 };
+                // Xiaomi reports negative µA when charging
+                let abs_val = value.abs();
+                current = (abs_val as f32 / 6000000.0).clamp(0.0, 1.0);
+                is_charging = if value < 0 { 1.0 } else { 0.0 };
             }
         }
 
