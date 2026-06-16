@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::features::StateVector;
 
-const DATA_DIR: &str = "/data/local/tmp/ai_data";
+const DATA_DIR: &str = "/data/vendor/thermal/ai_data";
 const FLUSH_INTERVAL: usize = 100;
 const MAX_EXPERIENCES: usize = 10000;
 const RETENTION_DAYS: u64 = 7;
