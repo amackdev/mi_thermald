@@ -99,7 +99,7 @@ pub fn set_cpu_freq(cpu: &str, freq_khz: i32) -> i32 {
     if !ok {
         log_warn!("set cpu freq of {} to {} failed", cpu, freq_khz);
     } else {
-        log_info!("set cpu freq of {} to {}", cpu, freq_khz);
+        log_debug!("set cpu freq of {} to {}", cpu, freq_khz);
     }
     if ok { 0 } else { -1 }
 }
@@ -114,7 +114,7 @@ pub fn set_cpu_hotplug(cpu: &str, online: bool) -> i32 {
     if !ok {
         log_warn!("set cpu{} online to {} failed", n, online);
     } else {
-        log_info!("set cpu{} online to {}", n, online);
+        log_debug!("set cpu{} online to {}", n, online);
     }
     if ok { 0 } else { -1 }
 }
@@ -152,14 +152,14 @@ pub fn set_ipa_boost(level: i32) -> i32 {
 }
 
 pub fn set_bcl(ma: i32) -> i32 {
-    log_info!("set bcl to {}", ma);
+    log_debug!("set bcl to {}", ma);
     let ok = sysfs::write_int("/sys/class/power_supply/battery/constant_charge_current", ma)
         || sysfs::write_int("/sys/class/power_supply/battery/current_max", ma);
     if ok { 0 } else { -1 }
 }
 
 pub fn set_fcc(ma: i32) -> i32 {
-    log_info!("set fcc to {}", ma);
+    log_debug!("set fcc to {}", ma);
     if sysfs::write_int("/sys/class/power_supply/battery/constant_charge_current", ma) {
         0
     } else {
@@ -257,7 +257,7 @@ pub fn set_shutdown_policy(on: bool) -> i32 {
     if !ok {
         log_warn!("write shutdown policy0 file failed {}", on);
     } else {
-        log_info!("write shutdown policy0 file success");
+        log_debug!("write shutdown policy0 file success");
     }
     if ok { 0 } else { -1 }
 }

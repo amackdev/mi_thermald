@@ -80,7 +80,7 @@ impl WorkloadDetector {
                 // Profile 0 means no thermal profile active - reset to sensor detection
                 if profile_id == 0 {
                     if self.last_mode == WorkloadMode::Gaming || self.last_mode == WorkloadMode::Benchmark {
-                        log_info!("Thermal profile 0: resetting {:?} -> sensor detection", self.last_mode);
+                        log_debug!("Thermal profile 0: resetting {:?} -> sensor detection", self.last_mode);
                     }
                     // Reset counters to allow fresh sensor-based detection
                     self.high_load_ticks = 0;
@@ -92,7 +92,7 @@ impl WorkloadDetector {
                     log_debug!("Workload from thermal profile {}: {:?}", profile_id, mode);
                     // Trust sconfig immediately without hysteresis
                     if mode != self.last_mode {
-                        log_info!("Workload mode changed (sconfig): {:?} -> {:?}", self.last_mode, mode);
+                        log_debug!("Workload mode changed (sconfig): {:?} -> {:?}", self.last_mode, mode);
                         self.last_mode = mode;
                         self.ticks_in_current_mode = 0;
                     }
@@ -167,7 +167,7 @@ impl WorkloadDetector {
                 self.ticks_in_current_mode = 0;
                 self.last_mode = new_mode;
                 self.force_mode_update = false;
-                log_info!("Workload mode changed (forced): {:?}", new_mode);
+                log_debug!("Workload mode changed (forced): {:?}", new_mode);
                 return new_mode;
             }
 
@@ -179,7 +179,7 @@ impl WorkloadDetector {
                 // Confirmed mode change
                 self.ticks_in_current_mode = 0;
                 self.last_mode = new_mode;
-                log_info!("Workload mode changed: {:?}", new_mode);
+                log_debug!("Workload mode changed: {:?}", new_mode);
                 new_mode
             }
         }

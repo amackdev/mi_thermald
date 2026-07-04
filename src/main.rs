@@ -86,6 +86,17 @@ pub fn property_get_str(key: &str, default: &str) -> String {
     default.to_string()
 }
 
+// Check if debug logging is enabled via persist.mithermal.debug property
+pub fn is_debug_enabled() -> bool {
+    use std::sync::OnceLock;
+    static DEBUG_ENABLED: OnceLock<bool> = OnceLock::new();
+
+    *DEBUG_ENABLED.get_or_init(|| {
+        let debug_prop = property_get_str("persist.mithermal.debug", "0");
+        debug_prop == "1" || debug_prop == "true"
+    })
+}
+
 // ------------------------------------------------------------------
 // Signal handling
 // ------------------------------------------------------------------
@@ -267,7 +278,7 @@ impl Engine {
 
         let new_idx = EngineDiscovery::read_sconfig_idx();
         if new_idx >= 0 && new_idx != self.current_scenario_idx {
-            log_info!("sconfig changed {} -> {}, reloading scenario",
+            log_debug!("sconfig changed {} -> {}, reloading scenario",
                 self.current_scenario_idx, new_idx);
             let soc = property_get_str(MI_PROP_SOC_MODEL, "default");
             self.load_thermal_map_impl(&soc);
@@ -331,7 +342,7 @@ impl Engine {
                 if let Some(ref ai_acts) = ai_actions {
                     for a in ai_acts {
                         if level != prev_level {
-                            log_info!("apply {} level={} {:?}[{}] = {}",
+                            log_debug!("apply {} level={} {:?}[{}] = {}",
                                 self.instances[i].name, level, a.type_, a.target, a.value);
                         }
                     }
@@ -424,7 +435,7 @@ impl Engine {
                         for j in start..end {
                             let a = &self.instances[i].actions[j];
                             if level != prev_level {
-                                log_info!("apply {} level={} {:?}[{}] = {}",
+                                log_debug!("apply {} level={} {:?}[{}] = {}",
                                     self.instances[i].name, level, a.type_, a.target, a.value);
                             }
                         }
@@ -462,10 +473,10 @@ impl Engine {
 
     fn handle_config_change(&mut self) {
         if self.native_controller.is_some() {
-            log_info!("config change ignored (AI-native mode)");
+            log_debug!("config change ignored (AI-native mode)");
             return;
         }
-        log_info!("thermal config changed, reloading");
+        log_debug!("thermal config changed, reloading");
         let soc = property_get_str(MI_PROP_SOC_MODEL, "default");
         self.load_thermal_map_impl(&soc);
     }

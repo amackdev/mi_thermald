@@ -21,7 +21,9 @@ macro_rules! log_err {
 
 macro_rules! log_debug {
     ($($arg:tt)*) => {{
-        let msg = std::ffi::CString::new(format!($($arg)*)).unwrap();
-        crate::android_log_write(3, msg.as_ptr());
+        if crate::is_debug_enabled() {
+            let msg = std::ffi::CString::new(format!($($arg)*)).unwrap();
+            crate::android_log_write(3, msg.as_ptr());
+        }
     }};
 }

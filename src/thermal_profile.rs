@@ -40,8 +40,8 @@ impl ThermalProfileManager {
                 match content.trim().parse::<u32>() {
                     Ok(profile_id) => {
                         if profile_id != self.current_profile_id {
-                            log_info!("Thermal profile changed: {} → {}",
-                                     self.current_profile_id, profile_id);
+                            log_debug!("Thermal profile changed: {} → {}",
+                                      self.current_profile_id, profile_id);
                             self.current_profile_id = profile_id;
                         }
                         Some(profile_id)  // Return profile_id including 0 (reset)

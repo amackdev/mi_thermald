@@ -128,7 +128,7 @@ impl NativeController {
         }
         self.save_checkpoint();
         self.current_scenario = new_idx;
-        log_info!("AI-native: switched to scenario {}", new_idx);
+        log_debug!("AI-native: switched to scenario {}", new_idx);
     }
 
     pub fn tick(&mut self, sensor_readings: &[Sensor]) -> bool {
