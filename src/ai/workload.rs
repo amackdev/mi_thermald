@@ -1,6 +1,8 @@
 // Workload detection for context-aware thermal management
 // Detects gaming, benchmark, and normal usage patterns
 
+use crate::thermal_profile::ThermalProfileManager;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkloadMode {
     Idle,       // Screen off or very low activity
@@ -31,20 +33,80 @@ pub struct WorkloadDetector {
     // Hysteresis to prevent mode flapping
     ticks_in_current_mode: u64,
     mode_switch_threshold: u64,
+
+    // NEW: Thermal profile manager for instant detection
+    profile_manager: ThermalProfileManager,
+    sconfig_available: bool,
+
+    // Flag to bypass hysteresis after sconfig reset
+    force_mode_update: bool,
 }
 
 impl WorkloadDetector {
     pub fn new() -> Self {
+        let sconfig_available = ThermalProfileManager::is_sconfig_available();
+
+        if sconfig_available {
+            log_info!("Thermal sconfig node available - instant workload detection enabled");
+        } else {
+            log_info!("Thermal sconfig node not available - using sensor-based detection");
+        }
+
         WorkloadDetector {
             high_load_ticks: 0,
             sustained_gpu_ticks: 0,
             last_mode: WorkloadMode::Light,
             ticks_in_current_mode: 0,
             mode_switch_threshold: 10,  // 10 seconds before mode switch
+            profile_manager: ThermalProfileManager::new(),
+            sconfig_available,
+            force_mode_update: false,
         }
     }
 
+    /// Enhanced workload detection with thermal profile support
+    /// Checks sconfig node first for instant detection, falls back to sensor-based
     pub fn detect_workload(
+        &mut self,
+        cpu_load: f32,
+        cpu_freq_ratio: f32,
+        gpu_freq_ratio: f32,
+        temp_variance: f32,
+        screen_on: bool,
+    ) -> WorkloadMode {
+        // Priority 1: Check thermal profile from sconfig (instant, 100% accurate)
+        if self.sconfig_available {
+            if let Some(profile_id) = self.profile_manager.read_sconfig() {
+                // Profile 0 means no thermal profile active - reset to sensor detection
+                if profile_id == 0 {
+                    if self.last_mode == WorkloadMode::Gaming || self.last_mode == WorkloadMode::Benchmark {
+                        log_info!("Thermal profile 0: resetting {:?} -> sensor detection", self.last_mode);
+                    }
+                    // Reset counters to allow fresh sensor-based detection
+                    self.high_load_ticks = 0;
+                    self.sustained_gpu_ticks = 0;
+                    self.ticks_in_current_mode = 0;
+                    self.force_mode_update = true;  // Bypass hysteresis on next update
+                    // Fall through to sensor detection
+                } else if let Some(mode) = self.profile_manager.profile_to_workload(profile_id) {
+                    log_debug!("Workload from thermal profile {}: {:?}", profile_id, mode);
+                    // Trust sconfig immediately without hysteresis
+                    if mode != self.last_mode {
+                        log_info!("Workload mode changed (sconfig): {:?} -> {:?}", self.last_mode, mode);
+                        self.last_mode = mode;
+                        self.ticks_in_current_mode = 0;
+                    }
+                    return mode;
+                }
+            }
+        }
+
+        // Priority 2: Fall back to sensor-based detection
+        self.detect_workload_sensors(cpu_load, cpu_freq_ratio, gpu_freq_ratio, temp_variance, screen_on)
+    }
+
+    /// Original sensor-based workload detection
+    fn detect_workload_sensors(
         &mut self,
         cpu_load: f32,
         cpu_freq_ratio: f32,
@@ -97,9 +159,19 @@ impl WorkloadDetector {
     fn update_mode(&mut self, new_mode: WorkloadMode) -> WorkloadMode {
         if new_mode == self.last_mode {
             self.ticks_in_current_mode += 1;
+            self.force_mode_update = false;  // Clear force flag
             new_mode
         } else {
-            // Mode change detected, but wait for threshold
+            // Force update if flag is set (after sconfig reset)
+            if self.force_mode_update {
+                self.ticks_in_current_mode = 0;
+                self.last_mode = new_mode;
+                self.force_mode_update = false;
+                log_info!("Workload mode changed (forced): {:?}", new_mode);
+                return new_mode;
+            }
+
+            // Mode change detected, but wait for threshold (hysteresis)
             if self.ticks_in_current_mode < self.mode_switch_threshold {
                 self.ticks_in_current_mode = 0;
                 self.last_mode  // Stay in old mode (hysteresis)

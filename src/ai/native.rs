@@ -191,10 +191,25 @@ impl NativeController {
                     self.sustained_load_ticks = 0;
                 }
             }
-            let is_heavy_load = self.sustained_load_ticks >= 3;
 
-            log_debug!("AI-native: load={:.2} sustained={} heavy={} action={}",
-                state.cpu_load, self.sustained_load_ticks, is_heavy_load, final_action);
+            // Detect current workload mode using sconfig or sensors
+            let gpu_freq_ratio = crate::ai::WorkloadDetector::read_gpu_freq_ratio();
+            let workload_mode = self.workload_detector.detect_workload(
+                state.cpu_load,
+                state.cpu_freq_ratio,
+                gpu_freq_ratio,
+                state.temp_variance,
+                state.screen_on > 0.5,
+            );
+
+            // Heavy load is true if:
+            // 1. Sustained CPU load >= 3 ticks (sensor-based), OR
+            // 2. Workload mode is Gaming/Benchmark (sconfig instant detection)
+            let is_heavy_load = self.sustained_load_ticks >= 3
+                || matches!(workload_mode, crate::ai::WorkloadMode::Gaming | crate::ai::WorkloadMode::Benchmark);
+
+            log_debug!("AI-native: load={:.2} sustained={} workload={:?} heavy={} action={}",
+                state.cpu_load, self.sustained_load_ticks, workload_mode, is_heavy_load, final_action);
 
             if is_heavy_load && final_action < 9 {
                 log_debug!("AI-native: sustained override {} -> 9", final_action);
@@ -202,33 +217,56 @@ impl NativeController {
             }
 
             // Battery temp throttle: clamp action based on battery temperature
-            // During heavy load use gentler limits so gaming doesn't crash to minimum
+            // Separate thresholds for Gaming, Benchmark, and light loads
             let batt_temp = crate::sensor::sysfs::read_int(
                 "/sys/class/power_supply/battery/temp"
             );
             let batt_temp_c = batt_temp as f32 / 10.0;
             if batt_temp >= 0 {
-                let temp_action = if is_heavy_load {
-                    if batt_temp_c < 40.0 {
-                        9
-                    } else if batt_temp_c < 42.0 {
-                        8
-                    } else if batt_temp_c < 44.0 {
-                        6
-                    } else {
-                        5
-                    }
-                } else {
-                    if batt_temp_c < 35.0 {
-                        9
-                    } else if batt_temp_c < 38.0 {
-                        7
-                    } else if batt_temp_c < 40.0 {
-                        6
-                    } else if batt_temp_c < 42.0 {
-                        4
-                    } else {
-                        0
+                let temp_action = match workload_mode {
+                    // Benchmark - allows highest temps (up to 46°C)
+                    crate::ai::WorkloadMode::Benchmark => {
+                        if batt_temp_c < 41.5 {
+                            9
+                        } else if batt_temp_c < 43.5 {
+                            8
+                        } else if batt_temp_c < 46.0 {
+                            6
+                        } else {
+                            5
+                        }
+                    },
+                    // Gaming - high temps allowed (up to 44°C)
+                    crate::ai::WorkloadMode::Gaming => {
+                        if batt_temp_c < 38.0 {
+                            9
+                        } else if batt_temp_c < 40.0 {
+                            8
+                        } else if batt_temp_c < 42.0 {
+                            7
+                        } else if batt_temp_c < 44.0 {
+                            6
+                        } else {
+                            5
+                        }
+                    },
+                    // Idle, Light, Moderate - conservative thresholds
+                    _ => {
+                        if batt_temp_c < 33.0 {
+                            9
+                        } else if batt_temp_c < 36.0 {
+                            8
+                        } else if batt_temp_c < 38.0 {
+                            7
+                        } else if batt_temp_c < 40.0 {
+                            6
+                        } else if batt_temp_c < 43.0 {
+                            4
+                        } else if batt_temp_c < 45.0 {
+                            2
+                        } else {
+                            0
+                        }
                     }
                 };
                 if temp_action < final_action {
@@ -332,7 +370,8 @@ impl NativeController {
             if std::path::Path::new(&path).exists() {
                 let cur = crate::sensor::sysfs::read_int(&path).max(0);
                 let cur = if cur > 0 { cur } else { hw_max };
-                var.store(cur, std::sync::atomic::Ordering::Relaxed);
+                // FIX BUG-004: Use Release ordering for cross-thread visibility
+                var.store(cur, std::sync::atomic::Ordering::Release);
                 self.channels.push(CoolingChannel {
                     name: format!("cpu_freq{}", policy),
                     path,
@@ -367,7 +406,8 @@ impl NativeController {
                 let value = Self::action_to_channel_value(action, ch);
                 // Set atomic for continuous writer thread
                 if let Some(t) = Self::cpu_freq_target_var(&ch.name) {
-                    t.store(value, std::sync::atomic::Ordering::Relaxed);
+                    // FIX BUG-004: Use Release ordering for cross-thread visibility
+                    t.store(value, std::sync::atomic::Ordering::Release);
                 }
                 // Also write directly for immediate effect
                 if crate::sensor::sysfs::write_int(&ch.path, value) {
@@ -428,7 +468,8 @@ impl NativeController {
         // Non-fast chargers (DCP, regular USB): fixed slow rate, no temp reduction needed
         if !fast_charger {
             let slow_rate = 3000000; // 3A constant
-            crate::FCC_VALUE.store(slow_rate, std::sync::atomic::Ordering::Relaxed);
+            // FIX BUG-004: Use Release ordering for cross-thread visibility
+            crate::FCC_VALUE.store(slow_rate, std::sync::atomic::Ordering::Release);
             log_debug!("AI-native: charge_current = {} (slow charger type={})", slow_rate, usb_type.trim());
             let path = "/sys/class/power_supply/battery/constant_charge_current";
             let _ = crate::sensor::sysfs::write_int(path, slow_rate);
@@ -471,7 +512,8 @@ impl NativeController {
             max  // <35°C: full speed
         };
 
-        crate::FCC_VALUE.store(current, std::sync::atomic::Ordering::Relaxed);
+        // FIX BUG-004: Use Release ordering for cross-thread visibility
+        crate::FCC_VALUE.store(current, std::sync::atomic::Ordering::Release);
         log_debug!("AI-native: charge_current = {} (battery {:.1}°C)", current, temp_c);
 
         let path = "/sys/class/power_supply/battery/constant_charge_current";

@@ -105,13 +105,10 @@ pub fn set_cpu_freq(cpu: &str, freq_khz: i32) -> i32 {
 }
 
 pub fn set_cpu_hotplug(cpu: &str, online: bool) -> i32 {
-    let n = if cpu.starts_with("hotplug_cpu") {
-        &cpu[11..]
-    } else if cpu.starts_with("cpu") {
-        &cpu[3..]
-    } else {
-        cpu
-    };
+    // FIX BUG-007: Use strip_prefix for safe string slicing
+    let n = cpu.strip_prefix("hotplug_cpu")
+        .or_else(|| cpu.strip_prefix("cpu"))
+        .unwrap_or(cpu);
     let path = format!("/sys/devices/system/cpu/cpu{}/online", n);
     let ok = sysfs::write_int(&path, if online { 1 } else { 0 });
     if !ok {

@@ -12,6 +12,7 @@ mod config;
 mod algorithm;
 mod action;
 mod ai;
+mod thermal_profile;
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -416,7 +417,8 @@ impl Engine {
                             for j in start..end {
                                 self.instances[i].actions[j].value = pid_v;
                             }
-                            FCC_VALUE.store(pid_v, Ordering::Relaxed);
+                            // FIX BUG-004: Use Release ordering for cross-thread visibility
+                            FCC_VALUE.store(pid_v, Ordering::Release);
                         }
 
                         for j in start..end {
@@ -549,7 +551,8 @@ fn thread_cpu_freq_writer() {
     ];
     loop {
         for &(_, path, target) in &paths {
-            let val = target.load(std::sync::atomic::Ordering::Relaxed);
+            // FIX BUG-004: Use Acquire ordering to ensure visibility of writes
+            let val = target.load(std::sync::atomic::Ordering::Acquire);
             if val > 0 {
                 crate::sensor::sysfs::write_int(path, val);
             }
@@ -565,7 +568,8 @@ fn thread_fcc_writer() {
     let path = "/sys/class/power_supply/battery/constant_charge_current";
     let mut last_fcc = 0;
     loop {
-        let fcc = FCC_VALUE.load(Ordering::Relaxed);
+        // FIX BUG-004: Use Acquire ordering to ensure visibility of writes
+        let fcc = FCC_VALUE.load(Ordering::Acquire);
         if fcc > 0 && fcc != last_fcc {
             sysfs::write_int(path, fcc);
             last_fcc = fcc;

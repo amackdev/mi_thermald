@@ -4,7 +4,9 @@ use crate::types::*;
 
 pub fn evaluate_virtual_sensor(sensors: &[Sensor], vsn_idx: usize) -> i32 {
     let vsn = &sensors[vsn_idx];
-    if vsn.inputs.is_empty() || vsn.weight_sum == 0 {
+    // FIX BUG-001: Cache weight_sum to prevent TOCTOU race condition
+    let weight_sum = vsn.weight_sum;
+    if vsn.inputs.is_empty() || weight_sum == 0 {
         return -1;
     }
 
@@ -14,7 +16,7 @@ pub fn evaluate_virtual_sensor(sensors: &[Sensor], vsn_idx: usize) -> i32 {
         let w = if i < vsn.weights.len() { vsn.weights[i] as i64 } else { 0 };
         acc += v * w;
     }
-    let result = (acc / vsn.weight_sum as i64) as i32 + vsn.compensation;
+    let result = (acc / weight_sum as i64) as i32 + vsn.compensation;
     sensors[vsn_idx].last_temp_mc.store(result, Ordering::Relaxed);
     result
 }
@@ -26,7 +28,8 @@ pub fn algo_sic(inst: &Instance, temp_mc: i32, state: &mut SicState) -> i32 {
     }
 
     let mut seg = 0;
-    for i in 0..t.n_levels() {
+    // FIX BUG-008: Add bounds checking to prevent OOB access
+    for i in 0..t.n_levels().min(t.trig.len()) {
         if temp_mc >= t.trig[i] {
             seg = i;
         }
@@ -83,23 +86,27 @@ pub fn evaluate_instance(
 
     let raw_level = if inst.algo == AlgoType::Sic {
         let mut lvl = 0i32;
-        for i in 0..inst.threshold.n_levels() {
+        // FIX BUG-008: Add bounds checking
+        for i in 0..inst.threshold.n_levels().min(inst.threshold.trig.len()) {
             if temp_mc >= inst.threshold.trig[i] {
-                lvl = (i + 1) as i32;
+                // FIX BUG-003: Use saturating conversion to prevent overflow
+                lvl = (i + 1).min(i32::MAX as usize) as i32;
             }
         }
         inst.current_value = algo_sic(inst, temp_mc, sic_state);
         lvl
     } else {
         let mut lvl = 0i32;
-        for i in (0..inst.threshold.n_levels()).rev() {
+        // FIX BUG-008: Add bounds checking
+        for i in (0..inst.threshold.n_levels().min(inst.threshold.trig.len())).rev() {
             let crossed = if inst.reverse {
                 temp_mc <= inst.threshold.trig[i]
             } else {
                 temp_mc >= inst.threshold.trig[i]
             };
             if crossed {
-                lvl = (i + 1) as i32;
+                // FIX BUG-003: Use saturating conversion to prevent overflow
+                lvl = (i + 1).min(i32::MAX as usize) as i32;
                 break;
             }
         }
