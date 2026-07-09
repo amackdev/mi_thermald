@@ -9,6 +9,7 @@ pub enum WorkloadMode {
     Light,      // Browsing, messaging
     Moderate,   // Video playback, light apps
     Gaming,     // High sustained load
+    PerfGaming, // Perf High sustained load
     Benchmark,  // Extreme synthetic load
 }
 
@@ -18,7 +19,8 @@ impl WorkloadMode {
             WorkloadMode::Idle => 0.0,
             WorkloadMode::Light => 0.25,
             WorkloadMode::Moderate => 0.5,
-            WorkloadMode::Gaming => 0.75,
+            WorkloadMode::Gaming => 0.65,
+            WorkloadMode::PerfGaming => 0.75,
             WorkloadMode::Benchmark => 1.0,
         }
     }

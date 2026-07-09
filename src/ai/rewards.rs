@@ -49,6 +49,7 @@ impl RewardCalculator {
             WorkloadMode::Light => (1.0, 4.0),       // Balanced
             WorkloadMode::Moderate => (1.5, 3.5),    // Slightly favor performance
             WorkloadMode::Gaming => (3.0, 2.0),      // Prioritize performance
+            WorkloadMode::PerfGaming => (3.5, 1.75), // High performance gaming
             WorkloadMode::Benchmark => (4.0, 1.5),   // Max performance
         };
 
@@ -77,7 +78,8 @@ impl RewardCalculator {
         let (warn_temp, crit_temp) = match self.current_workload {
             WorkloadMode::Idle | WorkloadMode::Light => (35.0, 38.0),
             WorkloadMode::Moderate => (37.0, 40.0),
-            WorkloadMode::Gaming => (42.0, 45.0),
+            WorkloadMode::Gaming => (42.0, 44.0),
+            WorkloadMode::PerfGaming => (44.0, 45.0),
             WorkloadMode::Benchmark => (45.0, 48.0),
         };
 
@@ -95,7 +97,7 @@ impl RewardCalculator {
         // Heating penalty - stronger for non-gaming workloads
         let heating_penalty = if dt_battery > 0.0 {
             let penalty_scale = match self.current_workload {
-                WorkloadMode::Gaming | WorkloadMode::Benchmark => 1.0,
+                WorkloadMode::Gaming | WorkloadMode::PerfGaming | WorkloadMode::Benchmark => 1.0,
                 _ => 2.0,  // Double penalty for heating during light loads
             };
             -penalty_scale * 2.0 * dt_battery

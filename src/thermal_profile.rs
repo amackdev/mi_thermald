@@ -79,8 +79,11 @@ impl ThermalProfileManager {
             // Benchmarks (Geekbench, AnTuTu, 3DMark, etc.)
             6 | 10 | 40 => Some(WorkloadMode::Benchmark),
 
+            // heavy Gaming
+            18 | 39 => Some(WorkloadMode::PerfGaming),
+
             // Gaming (Genshin, PUBG, COD, Fortnite, etc.)
-            18 | 19 | 20 | 39 => Some(WorkloadMode::Gaming),
+            19 | 20 => Some(WorkloadMode::Gaming),
 
             // Camera apps (burst load)
             12 | 15 | 42 => Some(WorkloadMode::Moderate),

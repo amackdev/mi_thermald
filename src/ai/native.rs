@@ -206,7 +206,7 @@ impl NativeController {
             // 1. Sustained CPU load >= 3 ticks (sensor-based), OR
             // 2. Workload mode is Gaming/Benchmark (sconfig instant detection)
             let is_heavy_load = self.sustained_load_ticks >= 3
-                || matches!(workload_mode, crate::ai::WorkloadMode::Gaming | crate::ai::WorkloadMode::Benchmark);
+                || matches!(workload_mode, crate::ai::WorkloadMode::Gaming | crate::ai::WorkloadMode::PerfGaming | crate::ai::WorkloadMode::Benchmark);
 
             log_debug!("AI-native: load={:.2} sustained={} workload={:?} heavy={} action={}",
                 state.cpu_load, self.sustained_load_ticks, workload_mode, is_heavy_load, final_action);
@@ -237,7 +237,7 @@ impl NativeController {
                         }
                     },
                     // Gaming - high temps allowed (up to 44°C)
-                    crate::ai::WorkloadMode::Gaming => {
+                    crate::ai::WorkloadMode::PerfGaming => {
                         if batt_temp_c < 38.0 {
                             9
                         } else if batt_temp_c < 40.0 {
@@ -250,9 +250,23 @@ impl NativeController {
                             5
                         }
                     },
+                    // Gaming - high temps allowed (up to 44°C)
+                    crate::ai::WorkloadMode::Gaming => {
+                        if batt_temp_c < 36.0 {
+                            9
+                        } else if batt_temp_c < 38.0 {
+                            8
+                        } else if batt_temp_c < 40.0 {
+                            7
+                        } else if batt_temp_c < 42.0 {
+                            6
+                        } else {
+                            5
+                        }
+                    },
                     // Idle, Light, Moderate - conservative thresholds
                     _ => {
-                        if batt_temp_c < 33.0 {
+                        if batt_temp_c < 34.0 {
                             9
                         } else if batt_temp_c < 36.0 {
                             8

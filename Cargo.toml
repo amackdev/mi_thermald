@@ -12,5 +12,9 @@ serde_json = "1.0"
 fastrand = "2.0"
 ordered-float = "3.0"
 
+[profile.release]
+strip = true
+lto = true
+
 [target.aarch64-linux-android]
 linker = "/home/amackpro/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang"
