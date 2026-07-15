@@ -3,42 +3,28 @@ use std::fs;
 use crate::types::*;
 use crate::sensor::sysfs;
 
-pub fn cpuinfo_max_path(cpu: &str) -> String {
+// `cpu` names either a cpufreq policy ("policyN" / "cpu-cluster-N") or a raw
+// cpuN core; both forms route to the same cpufreq sysfs layout, just under
+// different directories.
+fn cpu_cpufreq_path(cpu: &str, leaf: &str) -> String {
     if cpu.starts_with("policy") || cpu.starts_with("cpu-cluster") {
         let suffix = if let Some(p) = cpu.rfind('-') {
             &cpu[p + 1..]
         } else {
             cpu
         };
-        format!(
-            "/sys/devices/system/cpu/cpufreq/policy{}/cpuinfo_max_freq",
-            suffix
-        )
+        format!("/sys/devices/system/cpu/cpufreq/policy{}/{}", suffix, leaf)
     } else {
-        format!(
-            "/sys/devices/system/cpu/{}/cpufreq/cpuinfo_max_freq",
-            cpu
-        )
+        format!("/sys/devices/system/cpu/{}/cpufreq/{}", cpu, leaf)
     }
 }
 
+pub fn cpuinfo_max_path(cpu: &str) -> String {
+    cpu_cpufreq_path(cpu, "cpuinfo_max_freq")
+}
+
 pub fn cpuinfo_min_path(cpu: &str) -> String {
-    if cpu.starts_with("policy") || cpu.starts_with("cpu-cluster") {
-        let suffix = if let Some(p) = cpu.rfind('-') {
-            &cpu[p + 1..]
-        } else {
-            cpu
-        };
-        format!(
-            "/sys/devices/system/cpu/cpufreq/policy{}/cpuinfo_min_freq",
-            suffix
-        )
-    } else {
-        format!(
-            "/sys/devices/system/cpu/{}/cpufreq/cpuinfo_min_freq",
-            cpu
-        )
-    }
+    cpu_cpufreq_path(cpu, "cpuinfo_min_freq")
 }
 
 pub fn action_apply(a: &Action) -> i32 {
@@ -79,22 +65,7 @@ pub fn action_apply_multi(actions: &[Action]) -> i32 {
 }
 
 pub fn set_cpu_freq(cpu: &str, freq_khz: i32) -> i32 {
-    let path = if cpu.starts_with("policy") || cpu.starts_with("cpu-cluster") {
-        let suffix = if let Some(p) = cpu.rfind('-') {
-            &cpu[p + 1..]
-        } else {
-            cpu
-        };
-        format!(
-            "/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq",
-            suffix
-        )
-    } else {
-        format!(
-            "/sys/devices/system/cpu/{}/cpufreq/scaling_max_freq",
-            cpu
-        )
-    };
+    let path = cpu_cpufreq_path(cpu, "scaling_max_freq");
     let ok = sysfs::write_int(&path, freq_khz);
     if !ok {
         log_warn!("set cpu freq of {} to {} failed", cpu, freq_khz);
