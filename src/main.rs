@@ -117,6 +117,63 @@ extern "C" fn signal_usr1(_: libc::c_int) {
 }
 
 // ------------------------------------------------------------------
+// Action default-value resolution
+// ------------------------------------------------------------------
+
+/// A level-0 ("off"/no-throttle) action configured with value=0 means "leave
+/// the current hardware state alone" rather than literally writing 0 (which
+/// would e.g. cap CPU freq to zero). Probe the live sysfs state so it gets
+/// re-asserted instead of clobbered.
+fn resolve_default_action_value(action: &mut Action) {
+    if action.value != 0 {
+        return;
+    }
+    match action.type_ {
+        ActionType::CpuFreq => {
+            let path = cpuinfo_max_path(&action.target);
+            let v = sysfs::read_int(&path);
+            action.value = if v > 0 { v } else { 3000000 };
+        }
+        ActionType::CpuHotplug => {
+            let n = action.target.strip_prefix("hotplug_cpu")
+                .or_else(|| action.target.strip_prefix("cpu"))
+                .unwrap_or(&action.target);
+            let path = format!("/sys/devices/system/cpu/cpu{}/online", n);
+            let v = sysfs::read_int(&path);
+            action.value = if v > 0 { v } else { 1 };
+        }
+        ActionType::GpuBoost => {
+            let table = sysfs::read_string(
+                "/sys/class/kgsl/kgsl-3d0/freq_table_mhz"
+            ).unwrap_or_default();
+            let max_mhz: i32 = table.split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            action.value = if max_mhz > 0 { max_mhz * 1_000_000 } else { 1_100_000_000 };
+        }
+        ActionType::Bcl => {
+            let v = sysfs::read_int(
+                "/sys/class/power_supply/battery/constant_charge_current"
+            );
+            action.value = if v > 0 { v } else { 5000000 };
+        }
+        ActionType::Fcc => {
+            let mut v = sysfs::read_int(
+                "/sys/class/power_supply/battery/constant_charge_current_max"
+            );
+            if v <= 0 {
+                v = sysfs::read_int(
+                    "/sys/class/power_supply/battery/constant_charge_current"
+                );
+            }
+            action.value = if v > 0 { v } else { 6000000 };
+        }
+        _ => {}
+    }
+}
+
+// ------------------------------------------------------------------
 // Engine
 // ------------------------------------------------------------------
 
@@ -364,62 +421,7 @@ impl Engine {
 
                         if level == 0 {
                             for j in start..end {
-                                if self.instances[i].actions[j].type_ == ActionType::CpuFreq
-                                    && self.instances[i].actions[j].value == 0
-                                {
-                                    let path = cpuinfo_max_path(&self.instances[i].actions[j].target);
-                                    let v = sysfs::read_int(&path);
-                                    self.instances[i].actions[j].value = if v > 0 { v } else { 3000000 };
-                                }
-                                if self.instances[i].actions[j].type_ == ActionType::CpuHotplug
-                                    && self.instances[i].actions[j].value == 0
-                                {
-                                    let cpu = &self.instances[i].actions[j].target;
-                                    let n = if cpu.starts_with("hotplug_cpu") {
-                                        &cpu[11..]
-                                    } else if cpu.starts_with("cpu") {
-                                        &cpu[3..]
-                                    } else {
-                                        cpu
-                                    };
-                                    let path = format!("/sys/devices/system/cpu/cpu{}/online", n);
-                                    let v = sysfs::read_int(&path);
-                                    self.instances[i].actions[j].value = if v > 0 { v } else { 1 };
-                                }
-                                if self.instances[i].actions[j].type_ == ActionType::GpuBoost
-                                    && self.instances[i].actions[j].value == 0
-                                {
-                                    let table = sysfs::read_string(
-                                        "/sys/class/kgsl/kgsl-3d0/freq_table_mhz"
-                                    ).unwrap_or_default();
-                                    let max_mhz: i32 = table.split_whitespace()
-                                        .next()
-                                        .and_then(|s| s.parse().ok())
-                                        .unwrap_or(0);
-                                    self.instances[i].actions[j].value =
-                                        if max_mhz > 0 { max_mhz * 1_000_000 } else { 1_100_000_000 };
-                                }
-                                if self.instances[i].actions[j].type_ == ActionType::Bcl
-                                    && self.instances[i].actions[j].value == 0
-                                {
-                                    let v = sysfs::read_int(
-                                        "/sys/class/power_supply/battery/constant_charge_current"
-                                    );
-                                    self.instances[i].actions[j].value = if v > 0 { v } else { 5000000 };
-                                }
-                                if self.instances[i].actions[j].type_ == ActionType::Fcc
-                                    && self.instances[i].actions[j].value == 0
-                                {
-                                    let mut v = sysfs::read_int(
-                                        "/sys/class/power_supply/battery/constant_charge_current_max"
-                                    );
-                                    if v <= 0 {
-                                        v = sysfs::read_int(
-                                            "/sys/class/power_supply/battery/constant_charge_current"
-                                        );
-                                    }
-                                    self.instances[i].actions[j].value = if v > 0 { v } else { 6000000 };
-                                }
+                                resolve_default_action_value(&mut self.instances[i].actions[j]);
                             }
                         }
 
