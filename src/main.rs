@@ -343,8 +343,27 @@ impl Engine {
             return 0;
         }
 
-        // Always evaluate all Virtual-type sensors (they may be defined in a
-        // base config and referenced by scenarios that lack a Virtual block).
+        self.evaluate_virtual_sensors();
+
+        let mut ai_engine = self.ai_engine.take();
+        let ai_enabled = ai_engine.as_ref()
+            .map(|ai| ai.is_enabled())
+            .unwrap_or(false);
+
+        for i in (0..self.instances.len()).rev() {
+            self.tick_instance(i, ai_engine.as_mut(), ai_enabled);
+        }
+
+        if let Some(mut engine) = ai_engine {
+            engine.end_tick(&self.sensors);
+            self.ai_engine = Some(engine);
+        }
+        0
+    }
+
+    // Always evaluate all Virtual-type sensors (they may be defined in a
+    // base config and referenced by scenarios that lack a Virtual block).
+    fn evaluate_virtual_sensors(&self) {
         for sensor_idx in 0..self.sensors.len() {
             if self.sensors[sensor_idx].type_ == SensorType::Virtual
                 && !self.sensors[sensor_idx].inputs.is_empty()
@@ -355,103 +374,100 @@ impl Engine {
                 }
             }
         }
+    }
 
-        let mut ai_engine = self.ai_engine.take();
-        let ai_enabled = ai_engine.as_ref()
-            .map(|ai| ai.is_enabled())
-            .unwrap_or(false);
+    fn tick_instance(&mut self, i: usize, ai_engine: Option<&mut ai::AIEngine>, ai_enabled: bool) {
+        if self.instances[i].algo == AlgoType::Virtual {
+            return;
+        }
+        let sensor_idx = match self.instances[i].sensor_idx {
+            Some(idx) => idx,
+            None => return,
+        };
 
-        for i in (0..self.instances.len()).rev() {
-            if self.instances[i].algo == AlgoType::Virtual {
-                continue;
+        let t = self.sensors[sensor_idx].last_temp_mc.load(Ordering::Relaxed);
+        let prev_level = self.instances[i].current_level;
+        let traditional_level = evaluate_instance(
+            &mut self.instances[i],
+            t,
+            &mut self.sic_states[i],
+        );
+
+        let (level, ai_actions) = if ai_enabled {
+            let engine = ai_engine.unwrap();
+            let state = engine.collect_state(&self.sensors, &self.instances[i], traditional_level);
+            let directive = engine.decide_action(&state, traditional_level, &self.instances[i]);
+            if directive.level != traditional_level {
+                log_debug!("AI: instance {} trad={} ai={} temp={}",
+                    self.instances[i].name, traditional_level, directive.level, t);
             }
-            let sensor_idx = match self.instances[i].sensor_idx {
-                Some(idx) => idx,
-                None => continue,
-            };
+            (directive.level, Some(directive.actions))
+        } else {
+            (traditional_level, None)
+        };
 
-            let t = self.sensors[sensor_idx].last_temp_mc.load(Ordering::Relaxed);
-            let prev_level = self.instances[i].current_level;
-            let traditional_level = evaluate_instance(
-                &mut self.instances[i],
-                t,
-                &mut self.sic_states[i],
-            );
+        if level != traditional_level {
+            self.instances[i].current_level = level;
+        }
 
-            let (level, ai_actions) = if ai_enabled {
-                let engine = ai_engine.as_mut().unwrap();
-                let state = engine.collect_state(&self.sensors, &self.instances[i], traditional_level);
-                let directive = engine.decide_action(&state, traditional_level, &self.instances[i]);
-                if directive.level != traditional_level {
-                    log_debug!("AI: instance {} trad={} ai={} temp={}",
-                        self.instances[i].name, traditional_level, directive.level, t);
+        if self.instances[i].actions.is_empty() {
+            return;
+        }
+
+        if let Some(ref ai_acts) = ai_actions {
+            for a in ai_acts {
+                if level != prev_level {
+                    log_debug!("apply {} level={} {:?}[{}] = {}",
+                        self.instances[i].name, level, a.type_, a.target, a.value);
                 }
-                (directive.level, Some(directive.actions))
-            } else {
-                (traditional_level, None)
-            };
-
-            if level != traditional_level {
-                self.instances[i].current_level = level;
             }
+            action_apply_multi(ai_acts);
+            return;
+        }
 
-            if !self.instances[i].actions.is_empty() {
-                if let Some(ref ai_acts) = ai_actions {
-                    for a in ai_acts {
-                        if level != prev_level {
-                            log_debug!("apply {} level={} {:?}[{}] = {}",
-                                self.instances[i].name, level, a.type_, a.target, a.value);
-                        }
-                    }
-                    action_apply_multi(ai_acts);
-                } else {
-                    let n_levels = self.instances[i].threshold.n_levels();
-                    let effective_levels = if n_levels > 0 { n_levels + 1 } else { 1 };
-                    let per_dev = self.instances[i].actions.len() / effective_levels;
-                    let start = (level as usize) * per_dev;
-                    let mut end = start + per_dev;
-                    log_debug!("tick instance {} sensor={} temp={} level={}->{} n_actions={}/{}/{}",
-                        self.instances[i].name,
-                        sensor_idx, t, prev_level, level,
-                        self.instances[i].actions.len(), n_levels, effective_levels);
-                    if start < self.instances[i].actions.len() {
-                        if end > self.instances[i].actions.len() {
-                            end = self.instances[i].actions.len();
-                        }
+        self.apply_traditional_level(i, sensor_idx, t, prev_level, level);
+    }
 
-                        if level == 0 {
-                            for j in start..end {
-                                resolve_default_action_value(&mut self.instances[i].actions[j]);
-                            }
-                        }
+    fn apply_traditional_level(&mut self, i: usize, sensor_idx: usize, t: i32, prev_level: i32, level: i32) {
+        let n_levels = self.instances[i].threshold.n_levels();
+        let effective_levels = if n_levels > 0 { n_levels + 1 } else { 1 };
+        let per_dev = self.instances[i].actions.len() / effective_levels;
+        let start = (level as usize) * per_dev;
+        let mut end = start + per_dev;
+        log_debug!("tick instance {} sensor={} temp={} level={}->{} n_actions={}/{}/{}",
+            self.instances[i].name,
+            sensor_idx, t, prev_level, level,
+            self.instances[i].actions.len(), n_levels, effective_levels);
+        if start >= self.instances[i].actions.len() {
+            return;
+        }
+        if end > self.instances[i].actions.len() {
+            end = self.instances[i].actions.len();
+        }
 
-                        if self.instances[i].algo == AlgoType::Sic {
-                            let pid_v = self.instances[i].current_value;
-                            for j in start..end {
-                                self.instances[i].actions[j].value = pid_v;
-                            }
-                            // FIX BUG-004: Use Release ordering for cross-thread visibility
-                            FCC_VALUE.store(pid_v, Ordering::Release);
-                        }
-
-                        for j in start..end {
-                            let a = &self.instances[i].actions[j];
-                            if level != prev_level {
-                                log_debug!("apply {} level={} {:?}[{}] = {}",
-                                    self.instances[i].name, level, a.type_, a.target, a.value);
-                            }
-                        }
-                        action_apply_multi(&self.instances[i].actions[start..end]);
-                    }
-                }
+        if level == 0 {
+            for j in start..end {
+                resolve_default_action_value(&mut self.instances[i].actions[j]);
             }
         }
 
-        if let Some(mut engine) = ai_engine {
-            engine.end_tick(&self.sensors);
-            self.ai_engine = Some(engine);
+        if self.instances[i].algo == AlgoType::Sic {
+            let pid_v = self.instances[i].current_value;
+            for j in start..end {
+                self.instances[i].actions[j].value = pid_v;
+            }
+            // FIX BUG-004: Use Release ordering for cross-thread visibility
+            FCC_VALUE.store(pid_v, Ordering::Release);
         }
-        0
+
+        for j in start..end {
+            let a = &self.instances[i].actions[j];
+            if level != prev_level {
+                log_debug!("apply {} level={} {:?}[{}] = {}",
+                    self.instances[i].name, level, a.type_, a.target, a.value);
+            }
+        }
+        action_apply_multi(&self.instances[i].actions[start..end]);
     }
 
     fn tick_native(&mut self) -> i32 {
