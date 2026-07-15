@@ -159,7 +159,13 @@ lower than what the Q-table picked:
 | Benchmark | <41.5→9, <43.5→8, <46.0→6, else 5 |
 | PerfGaming | <38.0→9, <40.0→8, <42.0→7, <44.0→6, else 5 |
 | Gaming | <36.0→9, <38.0→8, <40.0→7, <42.0→6, else 5 |
-| Idle/Light/Moderate | <34.0→9, <36.0→8, <38.0→7, <40.0→6, <43.0→4, <45.0→2, else 0 |
+| Moderate | <36.0→9, <38.0→8, <40.0→7, <41.0→6, <42.0→4, <45.0→3, else 2 |
+| Idle/Light | <34.0→9, <36.0→8, <38.0→7, <40.0→6, <43.0→4, <45.0→2, else 0 |
+
+Moderate's tail stays a mild throttle (2) rather than dropping to 0 like
+Idle/Light — sustained mixed load rarely reaches these temps in practice
+(higher frequency finishes micro-tasks faster, so heating tends to be
+self-limiting), so the fallback doesn't need to be as punitive.
 
 Charging current is independently ramped down as battery temperature rises
 (`apply_temp_based_charge()`): full rate below 35°C, linearly reduced through

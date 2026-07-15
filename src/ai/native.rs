@@ -25,7 +25,12 @@ const LADDER_BENCHMARK: TempLadder = &[(41.5, 9), (43.5, 8), (46.0, 6), (f32::MA
 const LADDER_PERFGAMING: TempLadder = &[(38.0, 9), (40.0, 8), (42.0, 7), (44.0, 6), (f32::MAX, 5)];
 // Gaming: high temps allowed (up to 42°C).
 const LADDER_GAMING: TempLadder = &[(36.0, 9), (38.0, 8), (40.0, 7), (42.0, 6), (f32::MAX, 5)];
-// Idle, Light, Moderate: conservative thresholds.
+// Moderate: sustained mixed load rarely reaches these temps (higher freq
+// finishes micro-tasks faster, so heating is self-limiting) — the tail
+// fallback stays a mild throttle rather than dropping straight to 0.
+const LADDER_MODERATE: TempLadder =
+    &[(36.0, 9), (38.0, 8), (40.0, 7), (41.0, 6), (42.0, 4), (45.0, 3), (f32::MAX, 2)];
+// Idle, Light: conservative thresholds.
 const LADDER_DEFAULT: TempLadder =
     &[(34.0, 9), (36.0, 8), (38.0, 7), (40.0, 6), (43.0, 4), (45.0, 2), (f32::MAX, 0)];
 
@@ -34,6 +39,7 @@ fn action_for_battery_temp(workload_mode: WorkloadMode, batt_temp_c: f32) -> u8 
         WorkloadMode::Benchmark => LADDER_BENCHMARK,
         WorkloadMode::PerfGaming => LADDER_PERFGAMING,
         WorkloadMode::Gaming => LADDER_GAMING,
+        WorkloadMode::Moderate => LADDER_MODERATE,
         _ => LADDER_DEFAULT,
     };
     ladder.iter()
