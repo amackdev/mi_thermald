@@ -9,9 +9,37 @@ use super::qtable::QTable;
 use super::rewards::RewardCalculator;
 use super::safety::SafetyMonitor;
 use super::workload::WorkloadDetector;
+use super::WorkloadMode;
 
 const SAVE_INTERVAL_TICKS: u64 = 1000;
 const DATA_DIR: &str = "/data/vendor/thermal/ai_data";
+
+/// Battery-temp throttle ladder: ascending (upper_bound_c, action) pairs.
+/// The first entry whose bound the temperature is still under wins; the
+/// last entry's bound must be f32::MAX so it always matches as a fallback.
+type TempLadder = &'static [(f32, u8)];
+
+// Benchmark allows the highest temps (up to 46°C).
+const LADDER_BENCHMARK: TempLadder = &[(41.5, 9), (43.5, 8), (46.0, 6), (f32::MAX, 5)];
+// PerfGaming: high temps allowed (up to 44°C).
+const LADDER_PERFGAMING: TempLadder = &[(38.0, 9), (40.0, 8), (42.0, 7), (44.0, 6), (f32::MAX, 5)];
+// Gaming: high temps allowed (up to 42°C).
+const LADDER_GAMING: TempLadder = &[(36.0, 9), (38.0, 8), (40.0, 7), (42.0, 6), (f32::MAX, 5)];
+// Idle, Light, Moderate: conservative thresholds.
+const LADDER_DEFAULT: TempLadder =
+    &[(34.0, 9), (36.0, 8), (38.0, 7), (40.0, 6), (43.0, 4), (45.0, 2), (f32::MAX, 0)];
+
+fn action_for_battery_temp(workload_mode: WorkloadMode, batt_temp_c: f32) -> u8 {
+    let ladder = match workload_mode {
+        WorkloadMode::Benchmark => LADDER_BENCHMARK,
+        WorkloadMode::PerfGaming => LADDER_PERFGAMING,
+        WorkloadMode::Gaming => LADDER_GAMING,
+        _ => LADDER_DEFAULT,
+    };
+    ladder.iter()
+        .find(|&&(bound, _)| batt_temp_c < bound)
+        .map_or(0, |&(_, action)| action)
+}
 
 pub struct CoolingChannel {
     pub name: String,
@@ -216,73 +244,14 @@ impl NativeController {
                 final_action = 9;
             }
 
-            // Battery temp throttle: clamp action based on battery temperature
-            // Separate thresholds for Gaming, Benchmark, and light loads
+            // Battery temp throttle: clamp action based on battery temperature.
+            // Separate thresholds for Gaming, Benchmark, and light loads.
             let batt_temp = crate::sensor::sysfs::read_int(
                 "/sys/class/power_supply/battery/temp"
             );
             let batt_temp_c = batt_temp as f32 / 10.0;
             if batt_temp >= 0 {
-                let temp_action = match workload_mode {
-                    // Benchmark - allows highest temps (up to 46°C)
-                    crate::ai::WorkloadMode::Benchmark => {
-                        if batt_temp_c < 41.5 {
-                            9
-                        } else if batt_temp_c < 43.5 {
-                            8
-                        } else if batt_temp_c < 46.0 {
-                            6
-                        } else {
-                            5
-                        }
-                    },
-                    // Gaming - high temps allowed (up to 44°C)
-                    crate::ai::WorkloadMode::PerfGaming => {
-                        if batt_temp_c < 38.0 {
-                            9
-                        } else if batt_temp_c < 40.0 {
-                            8
-                        } else if batt_temp_c < 42.0 {
-                            7
-                        } else if batt_temp_c < 44.0 {
-                            6
-                        } else {
-                            5
-                        }
-                    },
-                    // Gaming - high temps allowed (up to 44°C)
-                    crate::ai::WorkloadMode::Gaming => {
-                        if batt_temp_c < 36.0 {
-                            9
-                        } else if batt_temp_c < 38.0 {
-                            8
-                        } else if batt_temp_c < 40.0 {
-                            7
-                        } else if batt_temp_c < 42.0 {
-                            6
-                        } else {
-                            5
-                        }
-                    },
-                    // Idle, Light, Moderate - conservative thresholds
-                    _ => {
-                        if batt_temp_c < 34.0 {
-                            9
-                        } else if batt_temp_c < 36.0 {
-                            8
-                        } else if batt_temp_c < 38.0 {
-                            7
-                        } else if batt_temp_c < 40.0 {
-                            6
-                        } else if batt_temp_c < 43.0 {
-                            4
-                        } else if batt_temp_c < 45.0 {
-                            2
-                        } else {
-                            0
-                        }
-                    }
-                };
+                let temp_action = action_for_battery_temp(workload_mode, batt_temp_c);
                 if temp_action < final_action {
                     log_debug!("AI-native: batt={:.1}°C override action {} -> {}", batt_temp_c, final_action, temp_action);
                     final_action = temp_action;
