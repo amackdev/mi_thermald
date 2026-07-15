@@ -92,33 +92,28 @@ impl SafetyMonitor {
         })
     }
 
-    fn battery_over_limit(&self, sensors: &[Sensor]) -> bool {
-        let threshold = match self.current_workload {
-            WorkloadMode::Idle => BATTERY_TEMP_IDLE_MC,
-            WorkloadMode::Light => BATTERY_TEMP_IDLE_MC,
-            WorkloadMode::Moderate => BATTERY_TEMP_MODERATE_MC,
-            WorkloadMode::Gaming => BATTERY_TEMP_GAMING_MC,
-            WorkloadMode::PerfGaming => BATTERY_TEMP_PERFGAMING_MC,
-            WorkloadMode::Benchmark => BATTERY_TEMP_BENCHMARK_MC,
-        };
+    /// (warn_mc, crit_mc) battery temperature thresholds for the current workload.
+    fn battery_thresholds(&self) -> (i32, i32) {
+        match self.current_workload {
+            WorkloadMode::Idle | WorkloadMode::Light => (BATTERY_WARN_IDLE_MC, BATTERY_TEMP_IDLE_MC),
+            WorkloadMode::Moderate => (BATTERY_WARN_MODERATE_MC, BATTERY_TEMP_MODERATE_MC),
+            WorkloadMode::Gaming => (BATTERY_WARN_GAMING_MC, BATTERY_TEMP_GAMING_MC),
+            WorkloadMode::PerfGaming => (BATTERY_WARN_PERFGAMING_MC, BATTERY_TEMP_PERFGAMING_MC),
+            WorkloadMode::Benchmark => (BATTERY_WARN_BENCHMARK_MC, BATTERY_TEMP_BENCHMARK_MC),
+        }
+    }
 
-        sensors.iter().any(|s| {
-            let name = s.name.to_lowercase();
-            name.contains("battery")
-                && s.last_temp_mc.load(Ordering::Relaxed) > threshold
-        })
+    fn battery_over_limit(&self, sensors: &[Sensor]) -> bool {
+        let (_, crit) = self.battery_thresholds();
+        Self::any_battery_sensor_over(sensors, crit)
     }
 
     fn battery_warm(&self, sensors: &[Sensor]) -> bool {
-        let threshold = match self.current_workload {
-            WorkloadMode::Idle => BATTERY_WARN_IDLE_MC,
-            WorkloadMode::Light => BATTERY_WARN_IDLE_MC,
-            WorkloadMode::Moderate => BATTERY_WARN_MODERATE_MC,
-            WorkloadMode::Gaming => BATTERY_WARN_GAMING_MC,
-            WorkloadMode::PerfGaming => BATTERY_WARN_PERFGAMING_MC,
-            WorkloadMode::Benchmark => BATTERY_WARN_BENCHMARK_MC,
-        };
+        let (warn, _) = self.battery_thresholds();
+        Self::any_battery_sensor_over(sensors, warn)
+    }
 
+    fn any_battery_sensor_over(sensors: &[Sensor], threshold: i32) -> bool {
         sensors.iter().any(|s| {
             let name = s.name.to_lowercase();
             name.contains("battery")
@@ -127,12 +122,6 @@ impl SafetyMonitor {
     }
 
     pub fn get_battery_threshold(&self) -> i32 {
-        match self.current_workload {
-            WorkloadMode::Idle | WorkloadMode::Light => BATTERY_TEMP_IDLE_MC,
-            WorkloadMode::Moderate => BATTERY_TEMP_MODERATE_MC,
-            WorkloadMode::Gaming => BATTERY_TEMP_GAMING_MC,
-            WorkloadMode::PerfGaming => BATTERY_TEMP_PERFGAMING_MC,
-            WorkloadMode::Benchmark => BATTERY_TEMP_BENCHMARK_MC,
-        }
+        self.battery_thresholds().1
     }
 }
