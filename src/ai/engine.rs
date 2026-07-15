@@ -318,18 +318,9 @@ impl AIEngine {
 
     fn action_to_level(&self, action: u8, trad_level: i32, max_level: i32) -> i32 {
         let max_level = max_level.max(1);
-        match action {
-            0 => max_level,
-            1 => max_level * 8 / 9,
-            2 => max_level * 7 / 9,
-            3 => max_level * 6 / 9,
-            4 => max_level * 5 / 9,
-            5 => max_level * 4 / 9,
-            6 => max_level * 3 / 9,
-            7 => max_level * 2 / 9,
-            8 => max_level * 1 / 9,
-            9 => 0,
-            _ => trad_level.max(0).min(max_level),
+        if action > 9 {
+            return trad_level.max(0).min(max_level);
         }
+        super::lerp_by_action(action, 0, max_level, false)
     }
 }

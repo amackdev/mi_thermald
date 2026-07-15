@@ -508,20 +508,11 @@ impl NativeController {
             "balance_mode" => (action as i32 * 7 / 9).min(7),
             "boost" => 1, // always on — balance_mode handles cooling
             _ => {
-                let range = (ch.max_val - ch.min_val).max(1);
-                match action {
-                    0 => ch.min_val,
-                    1 => ch.min_val + range / 9,
-                    2 => ch.min_val + range * 2 / 9,
-                    3 => ch.min_val + range * 3 / 9,
-                    4 => ch.min_val + range * 4 / 9,
-                    5 => ch.min_val + range * 5 / 9,
-                    6 => ch.min_val + range * 6 / 9,
-                    7 => ch.min_val + range * 7 / 9,
-                    8 => ch.min_val + range * 8 / 9,
-                    9 => ch.max_val,
-                    _ => ch.value,
+                if action > 9 {
+                    return ch.value;
                 }
+                let range = (ch.max_val - ch.min_val).max(1);
+                super::lerp_by_action(action, ch.min_val, range, true)
             }
         }
     }
