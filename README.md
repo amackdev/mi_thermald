@@ -13,9 +13,10 @@ mi_thermald
 │   ├── config.rs         # OEM thermal config loading (AES-CBC decryption)
 │   ├── algorithm.rs      # Traditional threshold-based thermal evaluation
 │   ├── action.rs         # Action sysfs writers (cpufreq, GPU, BCL, FCC)
+│   ├── thermal_profile.rs # sconfig-node reader, profile ID → workload mode
 │   ├── log_macros.rs     # Logging macros (log_info!, log_debug!, etc.)
 │   └── ai/
-│       ├── mod.rs        # Module re-exports (AIEngine, NativeController)
+│       ├── mod.rs        # Module re-exports + shared action-interpolation helper
 │       ├── engine.rs     # AIEngine — Q-learning for traditional config mode
 │       ├── native.rs     # NativeController — Q-learning for pure AI mode
 │       ├── features.rs   # 27-dim state vector + feature extraction
@@ -103,13 +104,21 @@ When the device is idle (low CPU load, cool temperatures), the agent selects **a
 
 ### Workload Classification (`WorkloadDetector`)
 
+Detection is two-tiered: if the device exposes the `sconfig` thermal-profile
+sysfs node, `ThermalProfileManager` maps its profile ID straight to a
+`WorkloadMode` (instant, no hysteresis — e.g. profiles 18/39 → PerfGaming,
+19/20 → Gaming, 6/10/40 → Benchmark). Profile 0 or a missing node falls back
+to sensor-based detection below, which uses hysteresis (~10 ticks) to avoid
+mode flapping.
+
 | Mode | Criteria | perf_weight | batt_temp_weight |
 |------|----------|-------------|-----------------|
 | Idle | Screen off OR `cpu_load < 0.1` | 0.5 | 5.0 |
 | Light | `cpu_load > 0.1` | 1.0 | 4.0 |
 | Moderate | `cpu_load > 0.3` or GPU > 0.5 | 1.5 | 3.5 |
 | Gaming | 30s sustained CPU > 0.5 + GPU > 0.7 | 3.0 | 2.0 |
-| Benchmark | 60s sustained CPU > 0.8 | 4.0 | 1.5 |
+| PerfGaming | sconfig profile 18/39 (perf-heavy gaming) | 3.5 | 1.75 |
+| Benchmark | 60s sustained CPU > 0.8, or sconfig profile 6/10/40 | 4.0 | 1.5 |
 
 ### Reward Function
 
@@ -121,22 +130,40 @@ reward = temp_penalty + batt_temp_penalty
 ```
 
 Temperature penalty: -10 if CPU > 85°C, -0.1×(T-75) if > 75°C, else 0.
-Battery temp penalty: context-dependent thresholds (idle warn at 35°C, gaming warn at 42°C).
+Battery temp penalty: context-dependent thresholds (idle/light warn at 35°C,
+moderate at 37°C, gaming at 42°C, PerfGaming at 44°C, benchmark at 45°C).
 
 ### Safety Monitor
 
 Blocks actions that would violate hardware limits:
 - CPU > 85°C → only actions 0,1,8,9 allowed
-- Battery thresholds vary by workload mode
+- Battery over/warn thresholds vary by workload mode (`battery_thresholds()` in `ai/safety.rs`)
 - After 10 violations in 1 hour → AI permanently disables itself
 
 ### Sustained Load Override (NativeController only)
 
-If `cpu_load > 0.5` for 3+ consecutive ticks, forces action 9 (max performance) regardless of what Q-table selects — prevents thermal throttling during sustained bursts.
+If `cpu_load > 0.44` for 3+ consecutive ticks, or the detected workload mode
+is Gaming/PerfGaming/Benchmark, forces action 9 (max performance) regardless
+of what the Q-table selects — prevents thermal throttling during sustained
+bursts.
 
 ### Battery Temperature Override (NativeController only)
 
-If battery > 42°C and not in heavy load, clamps action to ≤ 4 (moderate throttling) to protect the battery.
+Each tick, the current battery temperature is looked up against a
+per-workload-mode throttle ladder (`action_for_battery_temp()` in
+`ai/native.rs`) and the action is clamped down if the ladder's value is
+lower than what the Q-table picked:
+
+| Workload | Ladder (temp °C → action) |
+|----------|----------------------------|
+| Benchmark | <41.5→9, <43.5→8, <46.0→6, else 5 |
+| PerfGaming | <38.0→9, <40.0→8, <42.0→7, <44.0→6, else 5 |
+| Gaming | <36.0→9, <38.0→8, <40.0→7, <42.0→6, else 5 |
+| Idle/Light/Moderate | <34.0→9, <36.0→8, <38.0→7, <40.0→6, <43.0→4, <45.0→2, else 0 |
+
+Charging current is independently ramped down as battery temperature rises
+(`apply_temp_based_charge()`): full rate below 35°C, linearly reduced through
+45–48°C down to 10% of max, and a fixed slow rate for non-fast chargers.
 
 ## Compilation
 
@@ -197,14 +224,22 @@ mi_thermald [-l <log_level>]
 
 - `-l <level>`: Set log level (3=ERR, 4=WARN, 6=INFO, 7=DEBUG). Default: 6.
 
+`log_debug!` calls are additionally gated at runtime by the
+`persist.mithermal.debug` Android property (`1`/`true` to enable), checked
+once via `OnceLock` on first use — set it before the daemon starts if you
+want debug-level tracing without changing `-l`.
+
 The daemon runs as a background service on Android. It uses:
-- `timerfd` / `epoll` for 10-second tick intervals
+- `timerfd` / `epoll` for 1-second tick intervals
 - `inotify` to watch for config file changes and reload
-- Background threads for sensor polling (10s), CPU freq writing (50ms), FCC writing (200ms)
+- Background threads for sensor polling (1s), CPU freq writing (50ms), FCC writing (200ms)
 
 ### AI Data Persistence
 
-Q-tables are saved to `/data/local/tmp/ai_data/q_scenario_*.json` every 1000 ticks and on shutdown.
+Q-tables are saved to `/data/vendor/thermal/ai_data/q_scenario_*.json` (native
+mode) or `q_table.json` (traditional+AI mode) every 1000 ticks and on
+shutdown. The same directory holds `experiences_*.jsonl` state/action/reward
+logs, flushed every 100 records and pruned after 7 days.
 
 ### Config File Format (Traditional mode)
 
@@ -219,6 +254,7 @@ OEM thermal configs live in `/data/vendor/thermal/config/`. They are AES-CBC enc
 | `/data/vendor/thermal/thermal.dump` | State dump (SIGUSR1) |
 | `/data/vendor/thermal/last_thermal.dump` | Last state dump (shutdown) |
 | `/data/local/tmp/thermald_decrypt/` | Decrypted config dump |
-| `/data/local/tmp/ai_data/` | AI Q-table checkpoints |
+| `/data/vendor/thermal/ai_data/` | AI Q-table checkpoints + experience logs |
 | `/sys/devices/system/cpu/cpufreq/policy{0,3,7}/scaling_max_freq` | CPU freq targets |
 | `/sys/class/thermal/thermal_message/board_sensor_temp` | Board temperature |
+| `/sys/class/thermal/thermal_message/sconfig` | Thermal profile ID (instant workload detection) |
