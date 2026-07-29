@@ -209,6 +209,7 @@ impl Engine {
 
     fn init(&mut self) -> i32 {
         let args: Vec<String> = std::env::args().collect();
+        #[allow(unused)]
         let mut log_level = LOG_INFO;
         let mut i = 1;
         while i < args.len() {
