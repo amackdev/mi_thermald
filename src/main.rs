@@ -543,35 +543,6 @@ fn thread_poll_sensors(engine: Arc<Mutex<Engine>>, shutdown: Arc<AtomicBool>) {
     }
 }
 
-fn thread_board_sensor(shutdown: Arc<AtomicBool>) {
-    unsafe {
-        let tfd = libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_CLOEXEC);
-        if tfd < 0 {
-            return;
-        }
-        let its = libc::itimerspec {
-            it_interval: libc::timespec { tv_sec: 2, tv_nsec: 0 },
-            it_value: libc::timespec { tv_sec: 2, tv_nsec: 0 },
-        };
-        libc::timerfd_settime(tfd, 0, &its, std::ptr::null_mut());
-        while !shutdown.load(Ordering::Relaxed) {
-            let mut exp: u64 = 0;
-            libc::read(tfd, &mut exp as *mut _ as *mut libc::c_void, 8);
-            let v = sysfs::read_int("/sys/class/thermal/thermal_message/board_sensor_temp");
-            log_debug!("board sensor temp = {} mC", v);
-        }
-        libc::close(tfd);
-    }
-}
-
-fn thread_second_board() {
-    let _v = sysfs::read_int("/sys/class/thermal/thermal_message/board_sensor_second_temp");
-}
-
-fn thread_second_display() {
-    let _v = sysfs::read_int("/sys/class/thermal/thermal_message/display_therm_temp");
-}
-
 fn thread_cpu_freq_writer() {
     let paths = [
         (0, "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq", &CPU_FREQ0_TARGET),
@@ -610,66 +581,7 @@ fn thread_fcc_writer() {
     }
 }
 
-fn thread_charger_temp(shutdown: Arc<AtomicBool>) {
-    unsafe {
-        let tfd = libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_CLOEXEC);
-        if tfd < 0 {
-            return;
-        }
-        let its = libc::itimerspec {
-            it_interval: libc::timespec { tv_sec: 1, tv_nsec: 0 },
-            it_value: libc::timespec { tv_sec: 1, tv_nsec: 0 },
-        };
-        libc::timerfd_settime(tfd, 0, &its, std::ptr::null_mut());
-        while !shutdown.load(Ordering::Relaxed) {
-            let mut exp: u64 = 0;
-            libc::read(tfd, &mut exp as *mut _ as *mut libc::c_void, 8);
-            let v = sysfs::read_int("/sys/class/thermal/thermal_message/charger_temp");
-            log_debug!("[charger_temp {}]", v);
-        }
-        libc::close(tfd);
-    }
-}
 
-fn thread_cpu_nolimit(shutdown: Arc<AtomicBool>) {
-    unsafe {
-        let tfd = libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_CLOEXEC);
-        if tfd < 0 {
-            return;
-        }
-        let its = libc::itimerspec {
-            it_interval: libc::timespec { tv_sec: 5, tv_nsec: 0 },
-            it_value: libc::timespec { tv_sec: 5, tv_nsec: 0 },
-        };
-        libc::timerfd_settime(tfd, 0, &its, std::ptr::null_mut());
-        while !shutdown.load(Ordering::Relaxed) {
-            let mut exp: u64 = 0;
-            libc::read(tfd, &mut exp as *mut _ as *mut libc::c_void, 8);
-            let _v = sysfs::read_int("/sys/class/thermal/thermal_message/cpu_nolimit_temp");
-        }
-        libc::close(tfd);
-    }
-}
-
-fn thread_dynamic_ttj(shutdown: Arc<AtomicBool>) {
-    unsafe {
-        let tfd = libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_CLOEXEC);
-        if tfd < 0 {
-            return;
-        }
-        let its = libc::itimerspec {
-            it_interval: libc::timespec { tv_sec: 1, tv_nsec: 0 },
-            it_value: libc::timespec { tv_sec: 1, tv_nsec: 0 },
-        };
-        libc::timerfd_settime(tfd, 0, &its, std::ptr::null_mut());
-        while !shutdown.load(Ordering::Relaxed) {
-            let mut exp: u64 = 0;
-            libc::read(tfd, &mut exp as *mut _ as *mut libc::c_void, 8);
-            let _v = sysfs::read_int("/sys/kernel/thermal/ttj");
-        }
-        libc::close(tfd);
-    }
-}
 
 fn thread_bcl_init(shutdown: Arc<AtomicBool>, boot_completed: Arc<AtomicBool>) {
     // Wait a few seconds for boot to complete, then initialise BCL.
@@ -752,24 +664,8 @@ fn main() {
     let s = shutdown.clone();
     threads.push(thread::spawn(move || thread_poll_sensors(e, s)));
 
-    // Disabled: Unnecessary polling threads that waste CPU
-    // let s = shutdown.clone();
-    // threads.push(thread::spawn(move || thread_board_sensor(s)));
-    // threads.push(thread::spawn(move || thread_second_board()));
-    // threads.push(thread::spawn(move || thread_second_display()));
-
     threads.push(thread::spawn(|| thread_cpu_freq_writer()));
     threads.push(thread::spawn(|| thread_fcc_writer()));
-
-    // Disabled: Charger temp polling - useless node
-    // let s = shutdown.clone();
-    // threads.push(thread::spawn(move || thread_charger_temp(s)));
-
-    // Disabled: Unnecessary monitoring threads
-    // let s = shutdown.clone();
-    // threads.push(thread::spawn(move || thread_cpu_nolimit(s)));
-    // let s = shutdown.clone();
-    // threads.push(thread::spawn(move || thread_dynamic_ttj(s)));
 
     let s = shutdown.clone();
     let tx = reload_tx;
