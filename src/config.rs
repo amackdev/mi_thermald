@@ -67,24 +67,25 @@ fn split_devices(s: &str, max: usize) -> Vec<String> {
         .collect()
 }
 
-struct Block {
-    block_name: String,
-    algo_str: String,
-    sensor_name: String,
-    sensor_list: Vec<String>,
-    devices: Vec<String>,
-    polling: i32,
-    weight_sum: i32,
-    compensation: i32,
-    weights: Vec<i32>,
-    threshold: Threshold,
-    proportion: i32,
-    reverse: i32,
+#[derive(Debug, Clone)]
+pub struct ConfigBlock {
+    pub block_name: String,
+    pub algo_str: String,
+    pub sensor_name: String,
+    pub sensor_list: Vec<String>,
+    pub devices: Vec<String>,
+    pub polling: i32,
+    pub weight_sum: i32,
+    pub compensation: i32,
+    pub weights: Vec<i32>,
+    pub threshold: Threshold,
+    pub proportion: i32,
+    pub reverse: i32,
 }
 
-impl Default for Block {
+impl Default for ConfigBlock {
     fn default() -> Self {
-        Block {
+        ConfigBlock {
             block_name: String::new(),
             algo_str: String::new(),
             sensor_name: String::new(),
@@ -106,7 +107,7 @@ fn resolve_block(
     virtual_sensors: &[usize],
     instances: &mut Vec<Instance>,
     sic_states: &mut Vec<SicState>,
-    b: &Block,
+    b: &ConfigBlock,
 ) -> i32 {
     if instances.len() >= MI_MAX_CONFIGS {
         log_warn!("too many instances, dropping block {}", b.block_name);
@@ -225,23 +226,18 @@ fn resolve_block(
     0
 }
 
-pub fn load_scenario_config(
-    sensors: &mut Vec<Sensor>,
-    virtual_sensors: &[usize],
-    instances: &mut Vec<Instance>,
-    sic_states: &mut Vec<SicState>,
-    path: &str,
-) -> i32 {
+pub fn parse_config_blocks(path: &str) -> Vec<ConfigBlock> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
             log_err!("open {}: {}", path, e);
-            return -1;
+            return Vec::new();
         }
     };
-    log_info!("loading scenario config {}", path);
+    log_info!("parsing scenario config blocks {}", path);
 
-    let mut b = Block::default();
+    let mut blocks = Vec::new();
+    let mut b = ConfigBlock::default();
     let mut in_block = false;
 
     for line in content.lines() {
@@ -258,9 +254,9 @@ pub fn load_scenario_config(
 
         if line.starts_with('[') {
             if in_block {
-                resolve_block(sensors, virtual_sensors, instances, sic_states, &b);
+                blocks.push(b);
             }
-            b = Block::default();
+            b = ConfigBlock::default();
             in_block = true;
             let end = line.find(']').unwrap_or(line.len());
             b.block_name = line[1..end].to_string();
@@ -322,10 +318,29 @@ pub fn load_scenario_config(
         }
     }
     if in_block {
+        blocks.push(b);
+    }
+    blocks
+}
+
+pub fn load_scenario_config(
+    sensors: &mut Vec<Sensor>,
+    virtual_sensors: &[usize],
+    instances: &mut Vec<Instance>,
+    sic_states: &mut Vec<SicState>,
+    path: &str,
+) -> i32 {
+    let blocks = parse_config_blocks(path);
+    if blocks.is_empty() {
+        return -1;
+    }
+    
+    for b in blocks {
         resolve_block(sensors, virtual_sensors, instances, sic_states, &b);
     }
     0
 }
+
 
 pub fn decrypt_config_file(in_path: &str, out_path: &str) -> i32 {
     let encrypted = match fs::read(in_path) {
@@ -381,7 +396,7 @@ pub fn decrypt_config_file(in_path: &str, out_path: &str) -> i32 {
     }
 }
 
-fn find_scenario_name(map_content: &str, idx: i32) -> String {
+pub fn find_scenario_name(map_content: &str, idx: i32) -> String {
     for line in map_content.lines() {
         if line.starts_with('[') {
             if let Some(end) = line.find(']') {
@@ -399,13 +414,26 @@ fn find_scenario_name(map_content: &str, idx: i32) -> String {
     "thermal-normal.conf".to_string()
 }
 
-fn load_single_scenario(
-    sensors: &mut Vec<Sensor>,
-    virtual_sensors: &mut Vec<usize>,
-    instances: &mut Vec<Instance>,
-    sic_states: &mut Vec<SicState>,
-    fname: &str,
-) -> i32 {
+pub fn get_scenario_map_content() -> Option<String> {
+    let data_path = crate::property_get_str(MI_PROP_THERMAL_DATA_PATH, "/data/vendor/thermal");
+    let map_candidates = [
+        format!("{}/thermal-map.conf", MI_THERMALD_CONFIG_DIR),
+        "/odm/etc/thermal-map.conf".to_string(),
+        "/vendor/etc/thermal-map.conf".to_string(),
+        format!("{}/thermal-map.conf", data_path),
+    ];
+    let map_path = map_candidates.iter().find(|p| Path::new(p).exists())
+        .map(|s| s.as_str())
+        .unwrap_or(&map_candidates[0]);
+    let plain_path = format!("{}/thermal-map.txt", MI_THERMALD_DECRYPT_DIR);
+    if decrypt_config_file(map_path, &plain_path) != 0 {
+        log_err!("cannot decrypt dispatch table {}", map_path);
+        return None;
+    }
+    fs::read_to_string(&plain_path).ok()
+}
+
+pub fn resolve_scenario_path(fname: &str) -> Option<String> {
     let data_path = crate::property_get_str(MI_PROP_THERMAL_DATA_PATH, "/data/vendor/thermal");
     let vendor_path = format!("/vendor/etc/{}", fname);
     let odm_path = format!("/odm/etc/{}", fname);
@@ -417,15 +445,31 @@ fn load_single_scenario(
         else { "" };
 
     if chosen.is_empty() {
-        log_err!("no scenario config found for {}", fname);
-        return -1;
+        return None;
     }
 
     let scen_plain = format!("{}/{}.txt", MI_THERMALD_DECRYPT_DIR, fname);
     if decrypt_config_file(chosen, &scen_plain) != 0 {
-        return load_scenario_config(sensors, virtual_sensors, instances, sic_states, chosen);
+        return Some(chosen.to_string());
     }
-    load_scenario_config(sensors, virtual_sensors, instances, sic_states, &scen_plain)
+    Some(scen_plain)
+}
+
+fn load_single_scenario(
+    sensors: &mut Vec<Sensor>,
+    virtual_sensors: &mut Vec<usize>,
+    instances: &mut Vec<Instance>,
+    sic_states: &mut Vec<SicState>,
+    fname: &str,
+) -> i32 {
+    let path = match resolve_scenario_path(fname) {
+        Some(p) => p,
+        None => {
+            log_err!("no scenario config found for {}", fname);
+            return -1;
+        }
+    };
+    load_scenario_config(sensors, virtual_sensors, instances, sic_states, &path)
 }
 
 pub fn load_thermal_map(
@@ -436,31 +480,14 @@ pub fn load_thermal_map(
     sic_states: &mut Vec<SicState>,
     _soc: &str,
 ) -> i32 {
-    let data_path = crate::property_get_str(MI_PROP_THERMAL_DATA_PATH, "/data/vendor/thermal");
-
-    let map_candidates = [
-        format!("{}/thermal-map.conf", MI_THERMALD_CONFIG_DIR),
-        "/vendor/etc/thermal-map.conf".to_string(),
-        format!("{}/thermal-map.conf", data_path),
-    ];
-    let map_path = map_candidates.iter().find(|p| Path::new(p).exists())
-        .map(|s| s.as_str())
-        .unwrap_or(&map_candidates[0]);
-    let plain_path = format!("{}/thermal-map.txt", MI_THERMALD_DECRYPT_DIR);
-
-    if decrypt_config_file(map_path, &plain_path) != 0 {
-        log_err!("cannot decrypt dispatch table {}", map_path);
-        return -1;
-    }
+    let map_content = match get_scenario_map_content() {
+        Some(c) => c,
+        None => return -1,
+    };
 
     let target_idx = {
         let idx = EngineDiscovery::read_sconfig_idx();
         if idx < 0 { 0 } else { idx }
-    };
-
-    let map_content = match fs::read_to_string(&plain_path) {
-        Ok(c) => c,
-        Err(_) => return -1,
     };
 
     let target_scenario = find_scenario_name(&map_content, target_idx);

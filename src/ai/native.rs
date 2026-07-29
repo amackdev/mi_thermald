@@ -52,6 +52,7 @@ pub enum ChannelGroup {
     Compute,
     Thermal,
     Charging,
+    Display,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +76,7 @@ pub struct CoolingChannel {
     pub max_val: i32,
     pub pid: Option<PidConfig>,
     pub pid_state: SicState,
+    pub sensor_name: Option<String>,
 }
 
 struct ScenarioModel {
@@ -134,7 +136,7 @@ impl NativeController {
             last_charge_temp: -999,
             charge_max_val: 12000000,
         };
-        ctrl.discover_known_writable_channels();
+        ctrl.init_channels();
         ctrl.load_persisted_tables();
         if ctrl.channels.is_empty() {
             log_warn!("AI-native: no writable cooling channels, disabling");
@@ -322,7 +324,19 @@ impl NativeController {
         true
     }
 
-    fn discover_known_writable_channels(&mut self) {
+    pub fn init_channels(&mut self) {
+        self.channels.clear();
+        self.discover_hardware_channels();
+        self.enrich_from_config();
+        
+        log_info!("AI-native: discovered {} writable cooling channels", self.channels.len());
+        for ch in &self.channels {
+            log_info!("AI-native: channel {} group={:?} min={} max={} cur={}",
+                ch.name, ch.group, ch.min_val, ch.max_val, ch.value);
+        }
+    }
+
+    fn discover_hardware_channels(&mut self) {
         // balance_mode: 0 = max cooling, higher = more performance
         if std::path::Path::new("/sys/class/thermal/thermal_message/balance_mode").exists() {
             let cur = crate::sensor::sysfs::read_int(
@@ -338,6 +352,7 @@ impl NativeController {
                 max_val: 9,
                 pid: None,
                 pid_state: SicState::default(),
+                sensor_name: None,
             });
         }
 
@@ -354,6 +369,7 @@ impl NativeController {
                 max_val: 1,
                 pid: None,
                 pid_state: SicState::default(),
+                sensor_name: None,
             });
         }
 
@@ -376,6 +392,7 @@ impl NativeController {
                 max_val,
                 pid: None,
                 pid_state: SicState::default(),
+                sensor_name: None,
             });
         }
 
@@ -401,14 +418,89 @@ impl NativeController {
                     max_val: hw_max,
                     pid: None,
                     pid_state: SicState::default(),
+                    sensor_name: None,
                 });
             }
         }
 
-        log_info!("AI-native: discovered {} writable cooling channels", self.channels.len());
-        for ch in &self.channels {
-            log_info!("AI-native: channel {} min={} max={} cur={}",
-                ch.name, ch.min_val, ch.max_val, ch.value);
+        // GPU devfreq
+        let gpu_path = "/sys/class/kgsl/kgsl-3d0/devfreq/max_freq";
+        if std::path::Path::new(gpu_path).exists() {
+            let cur = crate::sensor::sysfs::read_int(gpu_path).max(0);
+            let available = crate::sensor::sysfs::read_string("/sys/class/kgsl/kgsl-3d0/devfreq/available_frequencies").unwrap_or_default();
+            let freqs: Vec<i32> = available.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            if !freqs.is_empty() {
+                let max_val = *freqs.iter().max().unwrap();
+                let min_val = *freqs.iter().min().unwrap();
+                self.channels.push(CoolingChannel {
+                    name: "gpu".into(),
+                    path: gpu_path.into(),
+                    action_type: ActionType::GpuBoost,
+                    group: ChannelGroup::Compute,
+                    value: if cur > 0 { cur } else { max_val },
+                    min_val,
+                    max_val,
+                    pid: None,
+                    pid_state: SicState::default(),
+                    sensor_name: None,
+                });
+            }
+        }
+
+        // Backlight
+        let bl_path = "/sys/class/backlight/panel0-backlight/brightness";
+        if std::path::Path::new(bl_path).exists() {
+            let cur = crate::sensor::sysfs::read_int(bl_path).max(0);
+            let max_val = crate::sensor::sysfs::read_int("/sys/class/backlight/panel0-backlight/max_brightness");
+            let max_val = if max_val > 0 { max_val } else { 4095 };
+            self.channels.push(CoolingChannel {
+                name: "backlight".into(),
+                path: bl_path.into(),
+                action_type: ActionType::None,
+                group: ChannelGroup::Display,
+                value: if cur > 0 { cur } else { max_val },
+                min_val: 0,
+                max_val,
+                pid: None,
+                pid_state: SicState::default(),
+                sensor_name: None,
+            });
+        }
+    }
+
+    fn enrich_from_config(&mut self) {
+        let map_content = match crate::config::get_scenario_map_content() {
+            Some(c) => c,
+            None => return,
+        };
+        let fname = crate::config::find_scenario_name(&map_content, self.current_scenario);
+        let path = match crate::config::resolve_scenario_path(&fname) {
+            Some(p) => p,
+            None => return,
+        };
+        
+        let blocks = crate::config::parse_config_blocks(&path);
+        for b in blocks {
+            if b.algo_str.to_lowercase() == "sic" && !b.devices.is_empty() {
+                let target_dev = &b.devices[0];
+                if let Some(ch) = self.channels.iter_mut().find(|c| &c.name == target_dev) {
+                    if !b.threshold.trig.is_empty() {
+                        ch.pid = Some(PidConfig {
+                            ks: b.threshold.ks.clone(),
+                            ki: b.threshold.ki.clone(),
+                            kc: b.threshold.kc.clone(),
+                            max_out: b.threshold.max_out.clone(),
+                            min_out: b.threshold.min_out.clone(),
+                            targets: b.threshold.target.clone(),
+                            triggers: b.threshold.trig.clone(),
+                        });
+                        ch.sensor_name = Some(b.sensor_name.clone());
+                        if ch.group == ChannelGroup::Compute && ch.name != "gpu" {
+                            ch.group = ChannelGroup::Thermal;
+                        }
+                    }
+                }
+            }
         }
     }
 
