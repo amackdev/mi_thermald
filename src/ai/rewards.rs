@@ -32,6 +32,46 @@ impl RewardCalculator {
         self.current_workload = mode;
     }
 
+    pub fn compute_group_reward(&self, state: &StateVector, group: crate::ai::native::ChannelGroup, action: i32) -> f32 {
+        let temp_penalty = self.compute_temp_reward(state.t_cpu_max);
+        let batt_temp_penalty = self.compute_batt_temp_reward(state.t_battery, state.dt_battery);
+        
+        let prev_action = match group {
+            crate::ai::native::ChannelGroup::Compute => state.last_action_compute * 9.0,
+            crate::ai::native::ChannelGroup::Thermal => state.last_action_thermal * 9.0,
+            crate::ai::native::ChannelGroup::Charging => state.last_action_charging * 9.0,
+            crate::ai::native::ChannelGroup::Display => state.last_action_display * 9.0,
+        };
+        let stab_penalty = (action as f32 - prev_action).abs();
+
+        let (perf_weight, batt_temp_weight) = match self.current_workload {
+            WorkloadMode::Idle => (0.5, 5.0),
+            WorkloadMode::Light => (1.0, 4.0),
+            WorkloadMode::Moderate => (1.5, 3.5),
+            WorkloadMode::Gaming => (3.0, 2.0),
+            WorkloadMode::PerfGaming => (3.5, 1.75),
+            WorkloadMode::Benchmark => (4.0, 1.5),
+        };
+
+        match group {
+            crate::ai::native::ChannelGroup::Compute => {
+                let perf_reward = state.cpu_freq_ratio + 0.5 * state.gpu_freq_ratio;
+                self.w_temp * temp_penalty + perf_weight * perf_reward - self.w_stab * stab_penalty
+            }
+            crate::ai::native::ChannelGroup::Thermal => {
+                self.w_temp * temp_penalty - self.w_stab * stab_penalty
+            }
+            crate::ai::native::ChannelGroup::Charging => {
+                let charge_speed_reward = state.charge_current_ratio;
+                batt_temp_weight * batt_temp_penalty + self.w_batt * charge_speed_reward - self.w_stab * stab_penalty
+            }
+            crate::ai::native::ChannelGroup::Display => {
+                let brightness_reward = state.brightness_ratio;
+                self.w_temp * temp_penalty * 0.5 + 2.0 * brightness_reward - self.w_stab * stab_penalty
+            }
+        }
+    }
+
     pub fn compute_reward(&self, state: &StateVector, prev_level: i32, new_level: i32) -> f32 {
         let temp_reward = self.compute_temp_reward(state.t_cpu_max);
         let batt_temp_reward = self.compute_batt_temp_reward(state.t_battery, state.dt_battery);
@@ -43,14 +83,13 @@ impl RewardCalculator {
         };
         let stab_penalty = (new_level - prev_level).abs() as f32;
 
-        // Adjust weights based on workload
         let (perf_weight, batt_temp_weight) = match self.current_workload {
-            WorkloadMode::Idle => (0.5, 5.0),        // Prioritize battery health
-            WorkloadMode::Light => (1.0, 4.0),       // Balanced
-            WorkloadMode::Moderate => (1.5, 3.5),    // Slightly favor performance
-            WorkloadMode::Gaming => (3.0, 2.0),      // Prioritize performance
-            WorkloadMode::PerfGaming => (3.5, 1.75), // High performance gaming
-            WorkloadMode::Benchmark => (4.0, 1.5),   // Max performance
+            WorkloadMode::Idle => (0.5, 5.0),
+            WorkloadMode::Light => (1.0, 4.0),
+            WorkloadMode::Moderate => (1.5, 3.5),
+            WorkloadMode::Gaming => (3.0, 2.0),
+            WorkloadMode::PerfGaming => (3.5, 1.75),
+            WorkloadMode::Benchmark => (4.0, 1.5),
         };
 
         self.w_temp * temp_reward
@@ -59,6 +98,8 @@ impl RewardCalculator {
             + self.w_batt * batt_reward
             - self.w_stab * stab_penalty
     }
+
+
 
     fn compute_temp_reward(&self, t_cpu: f32) -> f32 {
         let temp_c = t_cpu * 100.0;

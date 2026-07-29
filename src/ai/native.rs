@@ -213,19 +213,21 @@ impl NativeController {
                 0,
             );
 
-            state.last_action = model.last_actions.get(&ChannelGroup::Compute).copied().map(|a| a as f32 / 9.0).unwrap_or(0.0);
+            state.last_action_compute = model.last_actions.get(&ChannelGroup::Compute).copied().map(|a| a as f32 / 9.0).unwrap_or(0.0);
+            state.last_action_thermal = model.last_actions.get(&ChannelGroup::Thermal).copied().map(|a| a as f32 / 9.0).unwrap_or(0.0);
+            state.last_action_charging = model.last_actions.get(&ChannelGroup::Charging).copied().map(|a| a as f32 / 9.0).unwrap_or(0.0);
+            state.last_action_display = model.last_actions.get(&ChannelGroup::Display).copied().map(|a| a as f32 / 9.0).unwrap_or(0.0);
+            state.last_action = state.last_action_compute;
             state.action_stability = model.action_stability;
 
-            let state_array = self.feature_extractor.to_array(&state);
+            let gpu_freq_ratio = crate::ai::WorkloadDetector::read_gpu_freq_ratio();
+            state.gpu_freq_ratio = gpu_freq_ratio;
 
-            if self.safety_monitor.is_disabled(model.tick_count) {
-                self.enabled = false;
-                self.disabled_reason = Some(format!(
-                    "disabled after {} safety violations",
-                    self.safety_monitor.violations()
-                ));
-                log_warn!("AI-native: {}", self.disabled_reason.as_ref().unwrap());
-                return false;
+            if let Some(ch) = self.channels.iter().find(|c| c.group == ChannelGroup::Display) {
+                state.brightness_ratio = ch.value as f32 / ch.max_val.max(1) as f32;
+            }
+            if let Some(ch) = self.channels.iter().find(|c| c.name == "charge_current") {
+                state.charge_current_ratio = ch.value as f32 / ch.max_val.max(1) as f32;
             }
 
             // Sustained load detection: cpu_load is scheduler busyness,
@@ -240,8 +242,6 @@ impl NativeController {
                 }
             }
 
-            // Detect current workload mode using sconfig or sensors
-            let gpu_freq_ratio = crate::ai::WorkloadDetector::read_gpu_freq_ratio();
             let workload_mode = self.workload_detector.detect_workload(
                 state.cpu_load,
                 state.cpu_freq_ratio,
@@ -249,6 +249,26 @@ impl NativeController {
                 state.temp_variance,
                 state.screen_on > 0.5,
             );
+
+            state.workload_mode = match workload_mode {
+                crate::ai::WorkloadMode::Idle => 0.0,
+                crate::ai::WorkloadMode::Light => 0.25,
+                crate::ai::WorkloadMode::Moderate => 0.5,
+                crate::ai::WorkloadMode::Gaming | crate::ai::WorkloadMode::PerfGaming => 0.75,
+                crate::ai::WorkloadMode::Benchmark => 1.0,
+            };
+
+            let state_array = self.feature_extractor.to_array(&state);
+
+            if self.safety_monitor.is_disabled(model.tick_count) {
+                self.enabled = false;
+                self.disabled_reason = Some(format!(
+                    "disabled after {} safety violations",
+                    self.safety_monitor.violations()
+                ));
+                log_warn!("AI-native: {}", self.disabled_reason.as_ref().unwrap());
+                return false;
+            }
 
             // Heavy load is true if:
             // 1. Sustained CPU load >= 3 ticks (sensor-based), OR
@@ -315,7 +335,7 @@ impl NativeController {
                 
             for (&group, &final_action) in &group_actions {
                 if let Some(&la) = prev_actions.get(&group) {
-                    let reward = self.reward_calculator.compute_reward(ls, la as i32, final_action as i32);
+                    let reward = self.reward_calculator.compute_group_reward(ls, group, final_action as i32);
                     let q_table = model.q_tables.entry(group).or_insert_with(QTable::new);
                     q_table.update(&state_array, la, reward, &next_array);
                     if group == ChannelGroup::Compute {

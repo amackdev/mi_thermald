@@ -59,6 +59,17 @@ pub struct StateVector {
 
     // Workload context
     pub workload_mode: f32,  // 0=idle, 0.25=light, 0.5=moderate, 0.75=gaming, 1.0=benchmark
+
+    // Multi-channel action history (per-group)
+    pub last_action_compute: f32,
+    pub last_action_thermal: f32,
+    pub last_action_charging: f32,
+    pub last_action_display: f32,
+
+    // Channel-specific readings
+    pub gpu_freq_ratio: f32,
+    pub brightness_ratio: f32,
+    pub charge_current_ratio: f32,
 }
 
 pub struct FeatureExtractor {
@@ -173,6 +184,13 @@ impl FeatureExtractor {
             battery_current,
             cpu_load,
             workload_mode: 0.5, // Will be updated by engine
+            last_action_compute: 0.0,
+            last_action_thermal: 0.0,
+            last_action_charging: 0.0,
+            last_action_display: 0.0,
+            gpu_freq_ratio: 0.0,
+            brightness_ratio: 0.0,
+            charge_current_ratio: 0.0,
         }
     }
 
@@ -362,6 +380,13 @@ impl FeatureExtractor {
             state.battery_current,
             state.cpu_load,
             state.workload_mode,
+            state.last_action_compute,
+            state.last_action_thermal,
+            state.last_action_charging,
+            state.last_action_display,
+            state.gpu_freq_ratio,
+            state.brightness_ratio,
+            state.charge_current_ratio,
         ]
     }
 }
