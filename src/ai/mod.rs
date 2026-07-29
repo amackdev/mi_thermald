@@ -13,11 +13,6 @@ mod workload;
 
 pub use engine::AIEngine;
 pub use native::NativeController;
-#[allow(unused_imports)]
-pub use features::StateVector;
-#[allow(unused_imports)]
-pub use qtable::QTable;
-#[allow(unused_imports)]
 pub use workload::{WorkloadDetector, WorkloadMode};
 
 /// Linearly interpolate across the 10 discrete actions (0..=9) into

@@ -187,10 +187,6 @@ impl WorkloadDetector {
         }
     }
 
-    pub fn current_mode(&self) -> WorkloadMode {
-        self.last_mode
-    }
-
     pub fn read_gpu_freq_ratio() -> f32 {
         let cur = crate::sensor::sysfs::read_int(
             "/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq"

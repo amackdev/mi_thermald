@@ -4,25 +4,18 @@ pub const MI_THERMALD_VERSION_STRING: &str = "thermald";
 pub const MI_THERMALD_GLOBAL_MODE_FILE: &str = "/data/vendor/thermal/thermal-global-mode";
 pub const MI_THERMALD_DUMP_FILE: &str = "/data/vendor/thermal/thermal.dump";
 pub const MI_THERMALD_LAST_DUMP_FILE: &str = "/data/vendor/thermal/last_thermal.dump";
-pub const MI_THERMALD_REPORT_FILE: &str = "/data/vendor/thermal/report.dump";
 pub const MI_THERMALD_CONFIG_DIR: &str = "/data/vendor/thermal/config";
 pub const MI_THERMALD_DECRYPT_DIR: &str = "/data/local/tmp/thermald_decrypt";
-pub const MI_THERMALD_MAP_CONF_FMT: &str = "/data/vendor/thermal/config/%s";
-pub const MI_THERMALD_ETC_PATH_FMT: &str = "/vendor/etc/%s";
-pub const MI_THERMALD_ODM_PATH_FMT: &str = "/odm/etc/%s";
 
-pub const MI_PROP_SOC_MODEL: &str = "ro.soc.model\0";
-pub const MI_PROP_THERMAL_DATA_PATH: &str = "vendor.sys.thermal.data.path\0";
-pub const MI_PROP_BOOT_COMPLETED: &str = "vendor.sys.thermal.bcl.boot_completed\0";
+pub const MI_PROP_SOC_MODEL: &str = "ro.soc.model";
+pub const MI_PROP_THERMAL_DATA_PATH: &str = "vendor.sys.thermal.data.path";
 
 pub const MI_THERMALD_AES_KEY_STR: &[u8; 16] = b"thermalopenssl.h";
 
 pub const MI_MAX_SENSORS: usize = 128;
 pub const MI_MAX_CDEV: usize = 32;
 pub const MI_MAX_VSNS: usize = 16;
-pub const MI_MAX_FORMULAS: usize = 16;
 pub const MI_MAX_CONFIGS: usize = 256;
-pub const MI_MAX_THREADS: usize = 32;
 pub const MI_MAX_LEVELS: usize = 16;
 pub const MI_MAX_DEVICES_PER_BLOCK: usize = 16;
 pub const MI_MAX_INPUTS_PER_VSN: usize = 8;
@@ -37,7 +30,7 @@ pub const LOG_WARNING: libc::c_int = 4;
 pub const LOG_ERR: libc::c_int = 3;
 pub const LOG_DEBUG: libc::c_int = 7;
 
-pub const PROPERTY_VALUE_MAX: usize = 92;
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SensorType {

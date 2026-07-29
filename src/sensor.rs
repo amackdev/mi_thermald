@@ -42,7 +42,6 @@ impl Sensor {
     pub fn poll(&self) -> i32 {
         let v = sysfs::read_int(&self.path);
         if v >= 0 {
-            use std::sync::atomic::Ordering;
             self.last_temp_mc.store(v, Ordering::Relaxed);
         }
         v
@@ -101,40 +100,6 @@ impl EngineDiscovery {
         }
     }
 
-    pub fn scan_cooling_devices() -> Vec<CoolingDevice> {
-        let mut cdevs = Vec::new();
-        let dir = match std::fs::read_dir("/sys/class/thermal") {
-            Ok(d) => d,
-            Err(_) => return cdevs,
-        };
-        for entry in dir.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy().to_string();
-            if !name_str.starts_with("cooling_device") {
-                continue;
-            }
-            if cdevs.len() >= MI_MAX_CDEV {
-                break;
-            }
-            let base = format!("/sys/class/thermal/{}", name_str);
-            let mut cdev = CoolingDevice {
-                name: name_str,
-                path: base.clone(),
-                max_state: 0,
-                cur_state: 0,
-            };
-            let type_path = format!("{}/type", base);
-            if let Some(tname) = sysfs::read_string(&type_path) {
-                cdev.name = tname;
-            }
-            cdev.max_state = sysfs::read_int(&format!("{}/max_state", base));
-            cdev.cur_state = sysfs::read_int(&format!("{}/cur_state", base));
-            log_info!("cdev {} max={} cur={}", cdev.name, cdev.max_state, cdev.cur_state);
-            cdevs.push(cdev);
-        }
-        cdevs
-    }
-
     pub fn vsns_init(sensors: &mut Vec<Sensor>) -> Vec<usize> {
         let mut virtual_sensors = Vec::new();
         const VSN_PATHS: &[&str] = &[
@@ -165,7 +130,7 @@ impl EngineDiscovery {
         virtual_sensors
     }
 
-    pub fn formula_init() {}
+
 
     pub fn find_sensor(sensors: &[Sensor], virtual_sensors: &[usize], name: &str) -> Option<usize> {
         sensors.iter().position(|s| s.name == name)

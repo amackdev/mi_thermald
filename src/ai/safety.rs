@@ -120,8 +120,4 @@ impl SafetyMonitor {
                 && s.last_temp_mc.load(Ordering::Relaxed) > threshold
         })
     }
-
-    pub fn get_battery_threshold(&self) -> i32 {
-        self.battery_thresholds().1
-    }
 }

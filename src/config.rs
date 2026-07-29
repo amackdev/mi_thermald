@@ -8,9 +8,7 @@ use cbc::cipher::{KeyIvInit, BlockDecryptMut, block_padding::NoPadding};
 use crate::types::*;
 use crate::sensor::EngineDiscovery;
 
-fn property_get_string_default(key: &str, default: &str) -> String {
-    crate::property_get_str(key, default)
-}
+
 
 fn device_to_action(dev: &str) -> ActionType {
     if dev.len() >= 4
@@ -408,7 +406,7 @@ fn load_single_scenario(
     sic_states: &mut Vec<SicState>,
     fname: &str,
 ) -> i32 {
-    let data_path = property_get_string_default(MI_PROP_THERMAL_DATA_PATH, "/data/vendor/thermal");
+    let data_path = crate::property_get_str(MI_PROP_THERMAL_DATA_PATH, "/data/vendor/thermal");
     let vendor_path = format!("/vendor/etc/{}", fname);
     let odm_path = format!("/odm/etc/{}", fname);
     let scen_enc = format!("{}/config/{}", data_path, fname);
@@ -438,7 +436,7 @@ pub fn load_thermal_map(
     sic_states: &mut Vec<SicState>,
     _soc: &str,
 ) -> i32 {
-    let data_path = property_get_string_default(MI_PROP_THERMAL_DATA_PATH, "/data/vendor/thermal");
+    let data_path = crate::property_get_str(MI_PROP_THERMAL_DATA_PATH, "/data/vendor/thermal");
 
     let map_candidates = [
         format!("{}/thermal-map.conf", MI_THERMALD_CONFIG_DIR),
@@ -494,8 +492,6 @@ pub fn load_thermal_map(
         .filter(|(_, s)| s.type_ == SensorType::Virtual)
         .map(|(i, _)| i)
         .collect();
-
-    EngineDiscovery::formula_init();
 
     load_single_scenario(sensors, virtual_sensors, instances, sic_states, &target_scenario)
 }

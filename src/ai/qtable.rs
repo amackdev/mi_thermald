@@ -98,10 +98,6 @@ impl QTable {
         self.epsilon
     }
 
-    pub fn tick_count(&self) -> u64 {
-        self.tick_count
-    }
-
     pub fn weights(&self) -> &[f32] {
         &self.weights
     }
