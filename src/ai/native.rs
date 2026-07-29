@@ -224,7 +224,8 @@ impl NativeController {
             state.gpu_freq_ratio = gpu_freq_ratio;
 
             if let Some(ch) = self.channels.iter().find(|c| c.group == ChannelGroup::Display) {
-                state.brightness_ratio = ch.value as f32 / ch.max_val.max(1) as f32;
+                let actual_brightness = crate::sensor::sysfs::read_int(&ch.path).max(0);
+                state.brightness_ratio = actual_brightness as f32 / ch.max_val.max(1) as f32;
             }
             if let Some(ch) = self.channels.iter().find(|c| c.name == "charge_current") {
                 state.charge_current_ratio = ch.value as f32 / ch.max_val.max(1) as f32;
@@ -559,7 +560,7 @@ impl NativeController {
                 continue;
             }
 
-            if ch.name == "charge_current" {
+            if ch.name == "charge_current" || ch.name == "backlight" {
                 continue;
             }
             if ch.name == "boost" {
