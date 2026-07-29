@@ -34,6 +34,13 @@ struct Experience {
     temp_variance: f32,
     last_action: f32,
     action_stability: f32,
+    last_action_compute: f32,
+    last_action_thermal: f32,
+    last_action_charging: f32,
+    last_action_display: f32,
+    gpu_freq_ratio: f32,
+    brightness_ratio: f32,
+    charge_current_ratio: f32,
     t_gpu: f32,
     t_charger: f32,
     battery_current: f32,
@@ -41,6 +48,30 @@ struct Experience {
     workload_mode: f32,
     action: u8,
     reward: f32,
+}
+
+impl Experience {
+    fn csv_header() -> &'static str {
+        "t_cpu_max,t_cpu_avg,t_board_max,t_battery,t_ambient,dt_cpu,dt_board,dt_battery,\
+         battery_soc,is_charging,screen_on,time_of_day,thermal_level_traditional,\
+         t_cpu_ma_10,t_board_ma_10,thermal_level_ma_10,cpu_freq_ratio,temp_headroom_cpu,\
+         temp_headroom_battery,temp_variance,last_action,action_stability,\
+         last_action_compute,last_action_thermal,last_action_charging,last_action_display,\
+         gpu_freq_ratio,brightness_ratio,charge_current_ratio,t_gpu,t_charger,battery_current,\
+         cpu_load,workload_mode,action,reward"
+    }
+
+    fn to_csv_row(&self) -> String {
+        format!("{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{:.4}",
+            self.t_cpu_max, self.t_cpu_avg, self.t_board_max, self.t_battery, self.t_ambient,
+            self.dt_cpu, self.dt_board, self.dt_battery, self.battery_soc, self.is_charging,
+            self.screen_on, self.time_of_day, self.thermal_level_traditional, self.t_cpu_ma_10,
+            self.t_board_ma_10, self.thermal_level_ma_10, self.cpu_freq_ratio, self.temp_headroom_cpu,
+            self.temp_headroom_battery, self.temp_variance, self.last_action, self.action_stability,
+            self.last_action_compute, self.last_action_thermal, self.last_action_charging, self.last_action_display,
+            self.gpu_freq_ratio, self.brightness_ratio, self.charge_current_ratio, self.t_gpu,
+            self.t_charger, self.battery_current, self.cpu_load, self.workload_mode, self.action, self.reward)
+    }
 }
 
 pub struct DataCollector {
@@ -94,6 +125,13 @@ impl DataCollector {
             temp_variance: state.temp_variance,
             last_action: state.last_action,
             action_stability: state.action_stability,
+            last_action_compute: state.last_action_compute,
+            last_action_thermal: state.last_action_thermal,
+            last_action_charging: state.last_action_charging,
+            last_action_display: state.last_action_display,
+            gpu_freq_ratio: state.gpu_freq_ratio,
+            brightness_ratio: state.brightness_ratio,
+            charge_current_ratio: state.charge_current_ratio,
             t_gpu: state.t_gpu,
             t_charger: state.t_charger,
             battery_current: state.battery_current,
@@ -116,24 +154,25 @@ impl DataCollector {
         }
 
         let date_str = self.current_date();
-        let path = format!("{}/experiences_{}.jsonl", self.data_dir, date_str);
+        let path = format!("{}/experiences_{}.csv", self.data_dir, date_str);
 
+        let file_exists = Path::new(&path).exists();
         let mut data = String::new();
+        
+        if !file_exists {
+            data.push_str(Experience::csv_header());
+            data.push('\n');
+        }
+
         for exp in &self.buffer {
-            if let Ok(line) = serde_json::to_string(exp) {
-                data.push_str(&line);
-                data.push('\n');
-            }
+            data.push_str(&exp.to_csv_row());
+            data.push('\n');
         }
 
-        // append to existing file
-        if let Ok(existing) = fs::read_to_string(&path) {
-            data = existing + &data;
-        }
-
-        let temp_path = format!("{}.tmp", path);
-        if fs::write(&temp_path, &data).is_ok() {
-            let _ = fs::rename(&temp_path, &path);
+        // Use append mode instead of reading whole file
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+            use std::io::Write;
+            let _ = file.write_all(data.as_bytes());
         }
 
         self.buffer.clear();
