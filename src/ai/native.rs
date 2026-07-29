@@ -188,7 +188,7 @@ impl NativeController {
             return false;
         }
 
-        let (final_action, state, prev_state, prev_action) = {
+        let (group_actions, state, prev_state, prev_actions) = {
             let model = self.scenario_models
                 .entry(self.current_scenario)
                 .or_insert_with(ScenarioModel::new);
@@ -228,11 +228,6 @@ impl NativeController {
                 return false;
             }
 
-            let q_table = model.q_tables.entry(ChannelGroup::Compute).or_insert_with(QTable::new);
-            let action = q_table.select_action(&state_array);
-            let safe = self.safety_monitor.check_action(action, &[], model.tick_count);
-            let mut final_action = if safe { action } else { 3u8 };
-
             // Sustained load detection: cpu_load is scheduler busyness,
             // independent of frequency — works even if we're capping.
             if state.cpu_load > 0.44 {
@@ -261,55 +256,73 @@ impl NativeController {
             let is_heavy_load = self.sustained_load_ticks >= 3
                 || matches!(workload_mode, crate::ai::WorkloadMode::Gaming | crate::ai::WorkloadMode::PerfGaming | crate::ai::WorkloadMode::Benchmark);
 
-            log_debug!("AI-native: load={:.2} sustained={} workload={:?} heavy={} action={}",
-                state.cpu_load, self.sustained_load_ticks, workload_mode, is_heavy_load, final_action);
-
-            if is_heavy_load && final_action < 9 {
-                log_debug!("AI-native: sustained override {} -> 9", final_action);
-                final_action = 9;
-            }
-
-            // Battery temp throttle: clamp action based on battery temperature.
-            // Separate thresholds for Gaming, Benchmark, and light loads.
             let batt_temp = crate::sensor::sysfs::read_int(
                 "/sys/class/power_supply/battery/temp"
             );
             let batt_temp_c = batt_temp as f32 / 10.0;
-            if batt_temp >= 0 {
-                let temp_action = action_for_battery_temp(workload_mode, batt_temp_c);
-                if temp_action < final_action {
-                    log_debug!("AI-native: batt={:.1}°C override action {} -> {}", batt_temp_c, final_action, temp_action);
-                    final_action = temp_action;
+
+            let mut group_actions = HashMap::new();
+            for &group in &[ChannelGroup::Compute, ChannelGroup::Thermal, ChannelGroup::Charging, ChannelGroup::Display] {
+                let q_table = model.q_tables.entry(group).or_insert_with(QTable::new);
+                let action = q_table.select_action(&state_array);
+                let safe = self.safety_monitor.check_action(action, &[], model.tick_count);
+                let mut final_action = if safe { action } else { 3u8 };
+
+                if group == ChannelGroup::Compute {
+                    if is_heavy_load && final_action < 9 {
+                        final_action = 9;
+                    }
                 }
+
+                if batt_temp >= 0 {
+                    let temp_action = action_for_battery_temp(workload_mode, batt_temp_c);
+                    if temp_action < final_action {
+                        final_action = temp_action;
+                    }
+                }
+                
+                group_actions.insert(group, final_action);
             }
 
             let prev_state = model.last_state.clone();
-            let prev_action = model.last_actions.get(&ChannelGroup::Compute).copied();
-            if prev_action == Some(final_action) {
+            let prev_actions = model.last_actions.clone();
+            
+            let prev_action_compute = prev_actions.get(&ChannelGroup::Compute).copied();
+            let final_action_compute = group_actions.get(&ChannelGroup::Compute).copied().unwrap_or(9);
+            if prev_action_compute == Some(final_action_compute) {
                 model.ticks_same_action += 1;
             } else {
                 model.ticks_same_action = 0;
             }
             model.action_stability = (model.ticks_same_action as f32 / 100.0).min(1.0);
             model.last_state = Some(state.clone());
-            model.last_actions.insert(ChannelGroup::Compute, final_action);
+            for (&k, &v) in &group_actions {
+                model.last_actions.insert(k, v);
+            }
 
-            (final_action, state, prev_state, prev_action)
+            (group_actions, state, prev_state, prev_actions)
         };
 
-        self.apply_action(final_action);
+        self.apply_grouped_actions(&group_actions, sensor_readings);
 
-        if let (Some(ref ls), Some(la)) = (prev_state, prev_action) {
-            let reward = self.reward_calculator.compute_reward(ls, la as i32, final_action as i32);
+        if let Some(ref ls) = prev_state {
             let state_array = self.feature_extractor.to_array(ls);
             let next_array = self.feature_extractor.to_array(&state);
 
             let model = self.scenario_models
                 .get_mut(&self.current_scenario)
                 .unwrap();
-            let q_table = model.q_tables.entry(ChannelGroup::Compute).or_insert_with(QTable::new);
-            q_table.update(&state_array, la, reward, &next_array);
-            self.data_collector.record(ls, la, reward);
+                
+            for (&group, &final_action) in &group_actions {
+                if let Some(&la) = prev_actions.get(&group) {
+                    let reward = self.reward_calculator.compute_reward(ls, la as i32, final_action as i32);
+                    let q_table = model.q_tables.entry(group).or_insert_with(QTable::new);
+                    q_table.update(&state_array, la, reward, &next_array);
+                    if group == ChannelGroup::Compute {
+                        self.data_collector.record(ls, la, reward);
+                    }
+                }
+            }
         }
 
         {
@@ -504,53 +517,107 @@ impl NativeController {
         }
     }
 
-    fn apply_action(&mut self, action: u8) {
-        // Charge current is temperature-governed, not AI-controlled
+    fn apply_grouped_actions(&mut self, actions: &HashMap<ChannelGroup, u8>, sensors: &[Sensor]) {
         self.apply_temp_based_charge();
 
-        let mut boost_val = 0i32;
         for ch in &mut self.channels {
+            let action = *actions.get(&ch.group).unwrap_or(&9);
+
+            if let Some(ref pid) = ch.pid {
+                let setpoint = Self::action_to_setpoint(action, pid);
+                let sensor_temp = if let Some(ref name) = ch.sensor_name {
+                    sensors.iter().find(|s| &s.name == name).map(|s| s.last_temp_mc.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(0)
+                } else { 0 };
+                
+                let output = Self::algo_sic_channel(setpoint, sensor_temp, pid, &mut ch.pid_state, ch.value);
+                if output != ch.value {
+                    if crate::sensor::sysfs::write_int(&ch.path, output) {
+                        ch.value = output;
+                        log_debug!("AI-native [PID]: {} = {} (setpoint={} temp={})", ch.name, output, setpoint, sensor_temp);
+                    }
+                }
+                continue;
+            }
+
             if ch.name == "charge_current" {
                 continue;
             }
             if ch.name == "boost" {
-                boost_val = Self::action_to_channel_value(action, ch);
-                continue; // write boost last
+                let boost_val = Self::action_to_channel_value(action, ch);
+                crate::sensor::sysfs::write_int(&ch.path, boost_val);
+                ch.value = boost_val;
+                continue;
             }
             if ch.name.starts_with("cpu_freq") {
                 let value = Self::action_to_channel_value(action, ch);
-                // Set atomic for continuous writer thread
                 if let Some(t) = Self::cpu_freq_target_var(&ch.name) {
-                    // FIX BUG-004: Use Release ordering for cross-thread visibility
                     t.store(value, std::sync::atomic::Ordering::Release);
                 }
-                // Also write directly for immediate effect
                 if crate::sensor::sysfs::write_int(&ch.path, value) {
                     ch.value = value;
-                    log_debug!("AI-native: {} = {} (action {})", ch.name, value, action);
-                } else {
-                    log_warn!("AI-native: write failed on {}", ch.name);
                 }
                 continue;
             }
+
             let value = Self::action_to_channel_value(action, ch);
             if value != ch.value {
                 let ok = crate::sensor::sysfs::write_int(&ch.path, value);
                 if ok {
-                    log_debug!("AI-native: {} = {} (action {})", ch.name, value, action);
                     ch.value = value;
-                } else {
-                    log_warn!("AI-native: write failed on {}", ch.name);
                 }
             }
         }
-        // Write boost last — balance_mode ≥8 can reset it, so we always re-assert
-        if let Some(ch) = self.channels.iter_mut().find(|c| c.name == "boost") {
-            if crate::sensor::sysfs::write_int(&ch.path, boost_val) {
-                ch.value = boost_val;
-                log_debug!("AI-native: boost = {} (action {})", boost_val, action);
+    }
+
+    fn action_to_setpoint(action: u8, pid: &PidConfig) -> i32 {
+        if pid.targets.is_empty() { return 0; }
+        // Scale action 0-9 to targets array length
+        let idx = (action as usize * pid.targets.len()) / 10;
+        let idx = idx.clamp(0, pid.targets.len().saturating_sub(1));
+        pid.targets[idx]
+    }
+
+    fn algo_sic_channel(setpoint: i32, sensor_temp: i32, pid: &PidConfig, state: &mut SicState, current_val: i32) -> i32 {
+        let ek = setpoint - sensor_temp;
+        let output_now = if !state.initialized {
+            state.ek_1 = ek;
+            state.ek_2 = ek;
+            state.initialized = true;
+            state.initial_value
+        } else {
+            current_val
+        };
+
+        // Determine active segment based on temperature vs triggers
+        let mut seg = 0;
+        for (i, &trig) in pid.triggers.iter().enumerate() {
+            if sensor_temp >= trig {
+                seg = i;
             }
         }
+
+        let ks_val = pid.ks.get(seg).copied().unwrap_or(0) as i64;
+        let ki_val = pid.ki.get(seg).copied().unwrap_or(0) as i64;
+        let kc_val = pid.kc.get(seg).copied().unwrap_or(0) as i64;
+
+        let ek_1 = state.ek_1 as i64;
+        let ek_2 = state.ek_2 as i64;
+        let ek_i = ek as i64;
+
+        let delta_num = ks_val * (ek_i - 2 * ek_1 + ek_2)
+                      + kc_val * (ek_i - ek_1)
+                      + ki_val * ek_i;
+        let delta = (delta_num as f64 / 1000.0).round() as i64;
+
+        state.ek_2 = state.ek_1;
+        state.ek_1 = ek;
+
+        let mut output = (output_now as i64) + delta;
+        let max_o = pid.max_out.get(seg).copied().unwrap_or(i32::MAX) as i64 * 1000;
+        let min_o = pid.min_out.get(seg).copied().unwrap_or(0) as i64 * 1000;
+        output = output.clamp(min_o, max_o);
+
+        output as i32
     }
 
     fn cpu_freq_target_var(name: &str) -> Option<&'static std::sync::atomic::AtomicI32> {
