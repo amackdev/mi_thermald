@@ -1,7 +1,5 @@
-// Allow dead code — this is a direct port; many items are used only
-// via match arms or config-driven dispatch invisible to the compiler.
+// Allow dead code for config-driven dispatch types invisible to the compiler.
 #![allow(dead_code)]
-#![allow(unused_unsafe)]
 
 #[macro_use]
 mod log_macros;
@@ -185,14 +183,10 @@ struct Engine {
     sic_states: Vec<SicState>,
 
     epoll_fd: RawFd,
-    inotify_fd: RawFd,
     timer_fd: RawFd,
 
-    charger_only: bool,
-    boot_completed: bool,
     current_scenario_idx: i32,
 
-    log_level: i32,
     ai_engine: Option<ai::AIEngine>,
     native_controller: Option<ai::NativeController>,
 }
@@ -206,12 +200,8 @@ impl Engine {
             instances: Vec::new(),
             sic_states: Vec::new(),
             epoll_fd: -1,
-            inotify_fd: -1,
             timer_fd: -1,
-            charger_only: false,
-            boot_completed: false,
             current_scenario_idx: 0,
-            log_level: 6,
             ai_engine: None,
             native_controller: None,
         }
@@ -234,13 +224,15 @@ impl Engine {
             }
             i += 1;
         }
-        self.log_level = log_level;
 
         #[cfg(not(target_os = "android"))]
         unsafe {
+            fn log_upto(level: i32) -> i32 {
+                (1 << (level + 1)) - 1
+            }
             let ident = CString::new(MI_THERMALD_VERSION_STRING).unwrap();
             openlog(ident.as_ptr(), LOG_PID | LOG_NDELAY, LOG_DAEMON);
-            setlogmask(log::log_upto(log_level));
+            setlogmask(log_upto(log_level));
         }
 
         unsafe {
@@ -515,32 +507,39 @@ impl Engine {
     }
 }
 
-// ------------------------------------------------------------------
-// Thread workers
-// ------------------------------------------------------------------
-
-fn thread_poll_sensors(engine: Arc<Mutex<Engine>>, shutdown: Arc<AtomicBool>) {
+/// Create a periodic timerfd and run `body` each tick until `shutdown` is set.
+fn run_periodic_timer(
+    interval_secs: i64,
+    shutdown: &AtomicBool,
+    mut body: impl FnMut(),
+) {
     unsafe {
         let tfd = libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_CLOEXEC);
         if tfd < 0 {
             return;
         }
         let its = libc::itimerspec {
-            it_interval: libc::timespec { tv_sec: 1, tv_nsec: 0 },
-            it_value: libc::timespec { tv_sec: 1, tv_nsec: 0 },
+            it_interval: libc::timespec { tv_sec: interval_secs, tv_nsec: 0 },
+            it_value: libc::timespec { tv_sec: interval_secs, tv_nsec: 0 },
         };
         libc::timerfd_settime(tfd, 0, &its, std::ptr::null_mut());
         while !shutdown.load(Ordering::Relaxed) {
             let mut exp: u64 = 0;
             libc::read(tfd, &mut exp as *mut _ as *mut libc::c_void, 8);
-            if let Ok(guard) = engine.lock() {
-                for s in &guard.sensors {
-                    s.poll();
-                }
-            }
+            body();
         }
         libc::close(tfd);
     }
+}
+
+fn thread_poll_sensors(engine: Arc<Mutex<Engine>>, shutdown: Arc<AtomicBool>) {
+    run_periodic_timer(1, &shutdown, || {
+        if let Ok(guard) = engine.lock() {
+            for s in &guard.sensors {
+                s.poll();
+            }
+        }
+    });
 }
 
 fn thread_cpu_freq_writer() {
@@ -633,15 +632,7 @@ fn thread_config_watch(
     }
 }
 
-// ------------------------------------------------------------------
-// log_upto helper
-// ------------------------------------------------------------------
 
-mod log {
-    pub fn log_upto(level: i32) -> i32 {
-        (1 << (level + 1)) - 1
-    }
-}
 
 // ------------------------------------------------------------------
 // Main
