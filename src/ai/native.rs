@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 
-use crate::types::{Instance, Sensor, Threshold, AlgoType};
+use crate::types::{Instance, Sensor, Threshold, AlgoType, ActionType, SicState};
 
 use super::data_collector::DataCollector;
 use super::features::{FeatureExtractor, StateVector};
@@ -47,19 +47,41 @@ fn action_for_battery_temp(workload_mode: WorkloadMode, batt_temp_c: f32) -> u8 
         .map_or(0, |&(_, action)| action)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChannelGroup {
+    Compute,
+    Thermal,
+    Charging,
+}
+
+#[derive(Debug, Clone)]
+pub struct PidConfig {
+    pub ks: Vec<i32>,
+    pub ki: Vec<i32>,
+    pub kc: Vec<i32>,
+    pub max_out: Vec<i32>,
+    pub min_out: Vec<i32>,
+    pub targets: Vec<i32>,
+    pub triggers: Vec<i32>,
+}
+
 pub struct CoolingChannel {
     pub name: String,
     pub path: String,
+    pub action_type: ActionType,
+    pub group: ChannelGroup,
     pub value: i32,
     pub min_val: i32,
     pub max_val: i32,
+    pub pid: Option<PidConfig>,
+    pub pid_state: SicState,
 }
 
 struct ScenarioModel {
-    q_table: QTable,
+    q_tables: HashMap<ChannelGroup, QTable>,
     tick_count: u64,
     last_state: Option<StateVector>,
-    last_action: Option<u8>,
+    last_actions: HashMap<ChannelGroup, u8>,
     action_stability: f32,
     ticks_same_action: u64,
 }
@@ -67,10 +89,10 @@ struct ScenarioModel {
 impl ScenarioModel {
     fn new() -> Self {
         ScenarioModel {
-            q_table: QTable::new(),
+            q_tables: HashMap::new(),
             tick_count: 0,
             last_state: None,
-            last_action: None,
+            last_actions: HashMap::new(),
             action_stability: 0.0,
             ticks_same_action: 0,
         }
@@ -132,20 +154,14 @@ impl NativeController {
 
     pub fn save_checkpoint(&mut self) {
         self.data_collector.flush();
-        for (&scenario, model) in &self.scenario_models {
-            #[derive(serde::Serialize)]
-            struct Checkpoint {
-                scenario: i32,
-                tick_count: u64,
-                epsilon: f32,
-                weights: Vec<f32>,
-            }
-            let cp = Checkpoint {
-                scenario,
-                tick_count: model.tick_count,
-                epsilon: model.q_table.epsilon(),
-                weights: model.q_table.weights().to_vec(),
-            };
+        for (&scenario, model) in &mut self.scenario_models {
+            let q_table = model.q_tables.entry(ChannelGroup::Compute).or_insert_with(QTable::new);
+            let cp = serde_json::json!({
+                "scenario": scenario,
+                "epsilon": q_table.epsilon(),
+                "weights": q_table.weights().to_vec(),
+                "tick_count": model.tick_count
+            });
             let path = format!("{}/q_scenario_{}.json", DATA_DIR, scenario);
             if let Ok(json) = serde_json::to_string(&cp) {
                 let temp = format!("{}.tmp", path);
@@ -195,7 +211,7 @@ impl NativeController {
                 0,
             );
 
-            state.last_action = model.last_action.map(|a| a as f32 / 9.0).unwrap_or(0.0);
+            state.last_action = model.last_actions.get(&ChannelGroup::Compute).copied().map(|a| a as f32 / 9.0).unwrap_or(0.0);
             state.action_stability = model.action_stability;
 
             let state_array = self.feature_extractor.to_array(&state);
@@ -210,7 +226,8 @@ impl NativeController {
                 return false;
             }
 
-            let action = model.q_table.select_action(&state_array);
+            let q_table = model.q_tables.entry(ChannelGroup::Compute).or_insert_with(QTable::new);
+            let action = q_table.select_action(&state_array);
             let safe = self.safety_monitor.check_action(action, &[], model.tick_count);
             let mut final_action = if safe { action } else { 3u8 };
 
@@ -265,15 +282,15 @@ impl NativeController {
             }
 
             let prev_state = model.last_state.clone();
-            let prev_action = model.last_action;
-            if model.last_action == Some(final_action) {
+            let prev_action = model.last_actions.get(&ChannelGroup::Compute).copied();
+            if prev_action == Some(final_action) {
                 model.ticks_same_action += 1;
             } else {
                 model.ticks_same_action = 0;
             }
             model.action_stability = (model.ticks_same_action as f32 / 100.0).min(1.0);
             model.last_state = Some(state.clone());
-            model.last_action = Some(final_action);
+            model.last_actions.insert(ChannelGroup::Compute, final_action);
 
             (final_action, state, prev_state, prev_action)
         };
@@ -288,7 +305,8 @@ impl NativeController {
             let model = self.scenario_models
                 .get_mut(&self.current_scenario)
                 .unwrap();
-            model.q_table.update(&state_array, la, reward, &next_array);
+            let q_table = model.q_tables.entry(ChannelGroup::Compute).or_insert_with(QTable::new);
+            q_table.update(&state_array, la, reward, &next_array);
             self.data_collector.record(ls, la, reward);
         }
 
@@ -313,9 +331,13 @@ impl NativeController {
             self.channels.push(CoolingChannel {
                 name: "balance_mode".into(),
                 path: "/sys/class/thermal/thermal_message/balance_mode".into(),
+                action_type: ActionType::None,
+                group: ChannelGroup::Compute,
                 value: cur.max(0).min(9),
                 min_val: 0,
                 max_val: 9,
+                pid: None,
+                pid_state: SicState::default(),
             });
         }
 
@@ -325,9 +347,13 @@ impl NativeController {
             self.channels.push(CoolingChannel {
                 name: "boost".into(),
                 path: "/sys/class/thermal/thermal_message/boost".into(),
+                action_type: ActionType::None,
+                group: ChannelGroup::Compute,
                 value: cur.max(0),
                 min_val: 0,
                 max_val: 1,
+                pid: None,
+                pid_state: SicState::default(),
             });
         }
 
@@ -343,9 +369,13 @@ impl NativeController {
             self.channels.push(CoolingChannel {
                 name: "charge_current".into(),
                 path: batt_path.into(),
+                action_type: ActionType::None,
+                group: ChannelGroup::Charging,
                 value: if cur > 0 { cur } else { max_val },
                 min_val: 500000,
                 max_val,
+                pid: None,
+                pid_state: SicState::default(),
             });
         }
 
@@ -364,9 +394,13 @@ impl NativeController {
                 self.channels.push(CoolingChannel {
                     name: format!("cpu_freq{}", policy),
                     path,
+                    action_type: ActionType::CpuFreq,
+                    group: ChannelGroup::Compute,
                     value: cur,
-                    min_val: hw_max * 3 / 10,  // 30% floor
+                    min_val: hw_max * 3 / 10,
                     max_val: hw_max,
+                    pid: None,
+                    pid_state: SicState::default(),
                 });
             }
         }
@@ -546,14 +580,12 @@ impl NativeController {
                     }
                     if let Ok(cp) = serde_json::from_str::<Checkpoint>(&json) {
                         let mut q_table = QTable::new();
-                        if cp.weights.len() == q_table.weights().len() {
-                            if q_table.set_weights(&cp.weights).is_some() {
-                                let mut model = ScenarioModel::new();
-                                model.q_table = q_table;
-                                self.scenario_models.insert(scenario_id, model);
-                                log_info!("AI-native: loaded Q-table for scenario {} ({} weights)",
-                                    scenario_id, cp.weights.len());
-                            }
+                        if q_table.set_weights(&cp.weights).is_some() {
+                            let mut model = ScenarioModel::new();
+                            model.q_tables.insert(ChannelGroup::Compute, q_table);
+                            self.scenario_models.insert(scenario_id, model);
+                            log_info!("AI-native: loaded Q-table for scenario {} ({} weights)",
+                                scenario_id, cp.weights.len());
                         }
                     }
                 }
