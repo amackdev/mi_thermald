@@ -43,6 +43,9 @@ impl Sensor {
         let v = sysfs::read_int(&self.path);
         if v >= 0 {
             self.last_temp_mc.store(v, Ordering::Relaxed);
+            log_debug!("sensor poll: {} ({}) = {}", self.name, self.path, v);
+        } else {
+            log_debug!("sensor poll failed: {} ({})", self.name, self.path);
         }
         v
     }
@@ -56,7 +59,10 @@ impl EngineDiscovery {
             let p = format!("/sys/class/thermal/thermal_zone{}/type", z);
             let name = match sysfs::read_string(&p) {
                 Some(n) => n,
-                None => continue,
+                None => {
+                    log_debug!("no thermal_zone{} found or unreadable", z);
+                    continue;
+                }
             };
             if sensors.len() >= MI_MAX_SENSORS {
                 break;
