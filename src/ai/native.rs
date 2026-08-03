@@ -14,6 +14,18 @@ use super::WorkloadMode;
 const SAVE_INTERVAL_TICKS: u64 = 1000;
 const DATA_DIR: &str = "/data/vendor/thermal/ai_data";
 
+// Derivative-aware charge throttling: smooths the per-tick battery temp
+// delta (ticks are ~1s, see main.rs's native-controller timer) into a
+// °C/s rate estimate, then uses it as an *additional* ceiling on top of
+// the absolute-temperature ladder in `apply_temp_based_charge`. This lets
+// the controller react to a battery that's heating up fast even before it
+// crosses the next absolute-temp tier, instead of only reacting after the
+// fact. It only ever tightens the cap (via `.min()`), never loosens it.
+const CHARGE_RATE_EMA_ALPHA: f32 = 0.3;
+const CHARGE_RATE_SAFE_C_PER_S: f32 = 0.03; // below this, no extra cap
+const CHARGE_RATE_FAST_C_PER_S: f32 = 0.12; // at/above this, cap floor kicks in
+const CHARGE_RATE_CAP_FLOOR: f32 = 0.5; // worst-case cap: 50% of max current
+
 /// Battery-temp throttle ladder: ascending (upper_bound_c, action) pairs.
 /// The first entry whose bound the temperature is still under wins; the
 /// last entry's bound must be f32::MAX so it always matches as a fallback.
@@ -141,6 +153,7 @@ pub struct NativeController {
     enabled: bool,
     disabled_reason: Option<String>,
     last_charge_temp: i32,
+    charge_temp_rate_ema: f32,
     charge_max_val: i32,
     sustained_load_ticks: u64,
     idle_load_ticks: u64,
@@ -167,6 +180,7 @@ impl NativeController {
             enabled: true,
             disabled_reason: None,
             last_charge_temp: -999,
+            charge_temp_rate_ema: 0.0,
             charge_max_val: 12000000,
             global_tick_count: 0,
         };
@@ -732,38 +746,67 @@ impl NativeController {
             return;
         }
 
-        // Update every tick for smooth control (removed hysteresis check)
+        // Smooth the per-tick delta into a °C/s rate estimate. Skip the very
+        // first sample after a cold start / charging resume — there's no
+        // valid baseline yet and a stale last_charge_temp would produce a
+        // bogus spike.
+        if self.last_charge_temp > -900 {
+            let raw_rate = (batt_temp - self.last_charge_temp) as f32 / 10.0;
+            self.charge_temp_rate_ema =
+                CHARGE_RATE_EMA_ALPHA * raw_rate + (1.0 - CHARGE_RATE_EMA_ALPHA) * self.charge_temp_rate_ema;
+        }
         self.last_charge_temp = batt_temp;
 
         let max = self.charge_max_val;
 
         // Smooth linear transitions instead of step function
         let temp_c = batt_temp as f32 / 10.0;
-        let current = if temp_c >= 48.0 {
-            max / 10  // Emergency: 10%
+        let current = if temp_c >= 52.0 {
+            0  // Hard stop: charging fully disabled at extreme temp
+        } else if temp_c >= 48.0 {
+            // 48-52°C: linear ramp from 10% down to 0% (approaching hard stop)
+            let t = ((temp_c - 48.0) / 4.0).clamp(0.0, 1.0);
+            (max as f32 * 0.1 * (1.0 - t)) as i32
         } else if temp_c >= 45.0 {
-            // 45-48°C: linear ramp from 30% to 10%
+            // 45-48°C: linear ramp from 25% to 10%
             let t = ((temp_c - 45.0) / 3.0).clamp(0.0, 1.0);
-            (max as f32 * (0.3 - 0.2 * t)) as i32
+            (max as f32 * (0.25 - 0.15 * t)) as i32
         } else if temp_c >= 42.0 {
-            // 42-45°C: linear ramp from 60% to 30%
+            // 42-45°C: linear ramp from 45% to 25%
             let t = ((temp_c - 42.0) / 3.0).clamp(0.0, 1.0);
-            (max as f32 * (0.6 - 0.3 * t)) as i32
+            (max as f32 * (0.45 - 0.2 * t)) as i32
         } else if temp_c >= 39.0 {
-            // 39-42°C: linear ramp from 85% to 60%
+            // 39-42°C: linear ramp from 65% to 45%
             let t = ((temp_c - 39.0) / 3.0).clamp(0.0, 1.0);
-            (max as f32 * (0.85 - 0.25 * t)) as i32
+            (max as f32 * (0.65 - 0.2 * t)) as i32
         } else if temp_c >= 35.0 {
-            // 35-39°C: linear ramp from 100% to 85%
+            // 35-39°C: linear ramp from 85% to 65%
             let t = ((temp_c - 35.0) / 4.0).clamp(0.0, 1.0);
+            (max as f32 * (0.85 - 0.2 * t)) as i32
+        } else if temp_c >= 32.0 {
+            // 32-35°C: linear ramp from 100% to 85%
+            let t = ((temp_c - 32.0) / 3.0).clamp(0.0, 1.0);
             (max as f32 * (1.0 - 0.15 * t)) as i32
         } else {
-            max  // <35°C: full speed
+            max  // <32°C: full speed
         };
+
+        // Derivative-aware ceiling: if the battery is heating up fast, pull
+        // the cap down below whatever the absolute-temp ladder above still
+        // allows, so we react to the trend instead of waiting for it to
+        // cross into the next tier. Only rising temps count; a battery
+        // that's cooling gets no extra cap.
+        let rate = self.charge_temp_rate_ema.max(0.0);
+        let rate_t = ((rate - CHARGE_RATE_SAFE_C_PER_S)
+            / (CHARGE_RATE_FAST_C_PER_S - CHARGE_RATE_SAFE_C_PER_S))
+            .clamp(0.0, 1.0);
+        let rate_factor = 1.0 - rate_t * (1.0 - CHARGE_RATE_CAP_FLOOR);
+        let rate_cap = (max as f32 * rate_factor) as i32;
+        let current = current.min(rate_cap);
 
         // FIX BUG-004: Use Release ordering for cross-thread visibility
         crate::FCC_VALUE.store(current, std::sync::atomic::Ordering::Release);
-        log_debug!("AI-native: charge_current = {} (battery {:.1}°C)", current, temp_c);
+        log_debug!("AI-native: charge_current = {} (battery {:.1}°C, rate={:.3}°C/s)", current, temp_c, rate);
 
         let path = "/sys/class/power_supply/battery/constant_charge_current";
         let _ = crate::sensor::sysfs::write_int(path, current);
