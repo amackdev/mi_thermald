@@ -89,6 +89,7 @@ impl AIEngine {
         state: &StateVector,
         traditional_level: i32,
         instance: &Instance,
+        sensors: &[Sensor],
     ) -> AIDirective {
         if !self.enabled {
             return AIDirective {
@@ -120,14 +121,14 @@ impl AIEngine {
 
         let safe = self
             .safety_monitor
-            .check_action(action, &[].as_ref(), self.tick_count);
+            .check_action(action, sensors, self.tick_count);
 
         let final_action = if safe {
             action
         } else {
             log_warn!("AI: action {} rejected by safety monitor, falling back", action);
             let traditional_map = 3u8;
-            let _ = self.safety_monitor.check_action(traditional_map, &[].as_ref(), self.tick_count);
+            let _ = self.safety_monitor.check_action(traditional_map, sensors, self.tick_count);
             traditional_map
         };
 

@@ -31,9 +31,28 @@ use crate::action::{action_apply_multi, cpuinfo_max_path, set_bcl};
 // Logging + Android properties FFI
 // ------------------------------------------------------------------
 
+// The log_* macros pass Android log-priority numbers (VERBOSE=2, DEBUG=3,
+// INFO=4, WARN=5, ERROR=6 — see android_LogPriority) since that's what the
+// real __android_log_write() below expects. POSIX syslog() uses a different,
+// inverted numbering (LOG_EMERG=0 .. LOG_DEBUG=7 — see LOG_* in types.rs), so
+// on non-Android builds we must translate or every severity comes out wrong
+// (e.g. errors logged as LOG_INFO, debug spam logged as LOG_ERR).
+#[cfg(not(target_os = "android"))]
+fn android_prio_to_syslog(priority: libc::c_int) -> libc::c_int {
+    match priority {
+        2 => LOG_DEBUG,   // VERBOSE
+        3 => LOG_DEBUG,   // DEBUG
+        4 => LOG_INFO,    // INFO
+        5 => LOG_WARNING, // WARN
+        6 => LOG_ERR,     // ERROR
+        7 => LOG_ERR,     // FATAL
+        _ => LOG_INFO,
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 pub fn android_log_write(priority: libc::c_int, msg: *const libc::c_char) {
-    unsafe { crate::syslog_ffi(priority, msg); }
+    unsafe { crate::syslog_ffi(android_prio_to_syslog(priority), msg); }
 }
 
 #[cfg(target_os = "android")]
@@ -389,7 +408,7 @@ impl Engine {
         let (level, ai_actions) = if ai_enabled {
             let engine = ai_engine.unwrap();
             let state = engine.collect_state(&self.sensors, &self.instances[i], traditional_level);
-            let directive = engine.decide_action(&state, traditional_level, &self.instances[i]);
+            let directive = engine.decide_action(&state, traditional_level, &self.instances[i], &self.sensors);
             if directive.level != traditional_level {
                 log_debug!("AI: instance {} trad={} ai={} temp={}",
                     self.instances[i].name, traditional_level, directive.level, t);

@@ -209,13 +209,11 @@ fn resolve_block(
             if inst.actions.len() >= MI_MAX_DEVICES_PER_BLOCK * MI_MAX_LEVELS {
                 break;
             }
+            let idx = lvl * n_dev + d;
             let a = Action {
                 type_: device_to_action(&b.devices[d]),
                 target: b.devices[d].clone(),
-                value: if lvl < n_tgt / n_dev.max(1) {
-                    let idx = lvl * n_dev + d;
-                    if idx < n_tgt { b.threshold.target[idx] } else { 0 }
-                } else { 0 },
+                value: if idx < n_tgt { b.threshold.target[idx] } else { 0 },
             };
             inst.actions.push(a);
         }

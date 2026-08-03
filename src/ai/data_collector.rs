@@ -226,7 +226,7 @@ impl DataCollector {
             let path = entry.path();
             if let Some(name) = path.file_name() {
                 let name = name.to_string_lossy();
-                if name.starts_with("experiences_") && name.ends_with(".jsonl") {
+                if name.starts_with("experiences_") && name.ends_with(".csv") {
                     if let Ok(metadata) = fs::metadata(&path) {
                         if let Ok(mtime) = metadata.modified() {
                             if let Ok(mtime_secs) = mtime.duration_since(std::time::UNIX_EPOCH) {

@@ -55,6 +55,34 @@ pub enum ChannelGroup {
     Display,
 }
 
+const ALL_CHANNEL_GROUPS: [ChannelGroup; 4] = [
+    ChannelGroup::Compute,
+    ChannelGroup::Thermal,
+    ChannelGroup::Charging,
+    ChannelGroup::Display,
+];
+
+impl ChannelGroup {
+    fn name(&self) -> &'static str {
+        match self {
+            ChannelGroup::Compute => "compute",
+            ChannelGroup::Thermal => "thermal",
+            ChannelGroup::Charging => "charging",
+            ChannelGroup::Display => "display",
+        }
+    }
+
+    fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "compute" => Some(ChannelGroup::Compute),
+            "thermal" => Some(ChannelGroup::Thermal),
+            "charging" => Some(ChannelGroup::Charging),
+            "display" => Some(ChannelGroup::Display),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PidConfig {
     pub ks: Vec<i32>,
@@ -116,6 +144,11 @@ pub struct NativeController {
     charge_max_val: i32,
     sustained_load_ticks: u64,
     idle_load_ticks: u64,
+    // Monotonic tick counter shared across scenario switches — the
+    // per-scenario ScenarioModel::tick_count resets when switching to a
+    // fresh/less-used scenario, which would make the shared
+    // SafetyMonitor's tick-windowed violation tracking underflow.
+    global_tick_count: u64,
 }
 
 impl NativeController {
@@ -135,6 +168,7 @@ impl NativeController {
             disabled_reason: None,
             last_charge_temp: -999,
             charge_max_val: 12000000,
+            global_tick_count: 0,
         };
         ctrl.init_channels();
         ctrl.load_persisted_tables();
@@ -157,12 +191,18 @@ impl NativeController {
     pub fn save_checkpoint(&mut self) {
         self.data_collector.flush();
         for (&scenario, model) in &mut self.scenario_models {
-            let q_table = model.q_tables.entry(ChannelGroup::Compute).or_insert_with(QTable::new);
+            let mut groups = serde_json::Map::new();
+            for &group in &ALL_CHANNEL_GROUPS {
+                let q_table = model.q_tables.entry(group).or_insert_with(QTable::new);
+                groups.insert(group.name().to_string(), serde_json::json!({
+                    "epsilon": q_table.epsilon(),
+                    "weights": q_table.weights().to_vec(),
+                }));
+            }
             let cp = serde_json::json!({
                 "scenario": scenario,
-                "epsilon": q_table.epsilon(),
-                "weights": q_table.weights().to_vec(),
-                "tick_count": model.tick_count
+                "tick_count": model.tick_count,
+                "groups": groups,
             });
             let path = format!("{}/q_scenario_{}.json", DATA_DIR, scenario);
             if let Ok(json) = serde_json::to_string(&cp) {
@@ -187,6 +227,9 @@ impl NativeController {
         if !self.enabled {
             return false;
         }
+
+        self.global_tick_count += 1;
+        let global_tick_count = self.global_tick_count;
 
         let (group_actions, state, prev_state, prev_actions) = {
             let model = self.scenario_models
@@ -261,7 +304,7 @@ impl NativeController {
 
             let state_array = self.feature_extractor.to_array(&state);
 
-            if self.safety_monitor.is_disabled(model.tick_count) {
+            if self.safety_monitor.is_disabled(global_tick_count) {
                 self.enabled = false;
                 self.disabled_reason = Some(format!(
                     "disabled after {} safety violations",
@@ -286,7 +329,7 @@ impl NativeController {
             for &group in &[ChannelGroup::Compute, ChannelGroup::Thermal, ChannelGroup::Charging, ChannelGroup::Display] {
                 let q_table = model.q_tables.entry(group).or_insert_with(QTable::new);
                 let action = q_table.select_action(&state_array);
-                let safe = self.safety_monitor.check_action(action, &[], model.tick_count);
+                let safe = self.safety_monitor.check_action(action, sensor_readings, global_tick_count);
                 let mut final_action = if safe { action } else { 3u8 };
 
                 if group == ChannelGroup::Compute {
@@ -334,9 +377,12 @@ impl NativeController {
                 .get_mut(&self.current_scenario)
                 .unwrap();
                 
-            for (&group, &final_action) in &group_actions {
+            for &group in group_actions.keys() {
                 if let Some(&la) = prev_actions.get(&group) {
-                    let reward = self.reward_calculator.compute_group_reward(ls, group, final_action as i32);
+                    // Credit/blame the action that actually produced this
+                    // transition (`la`, taken last tick), not the new action
+                    // just selected for the next tick.
+                    let reward = self.reward_calculator.compute_group_reward(ls, group, la as i32);
                     let q_table = model.q_tables.entry(group).or_insert_with(QTable::new);
                     q_table.update(&state_array, la, reward, &next_array);
                     if group == ChannelGroup::Compute {
@@ -755,17 +801,32 @@ impl NativeController {
             if let Ok(scenario_id) = num_part.parse::<i32>() {
                 if let Ok(json) = fs::read_to_string(entry.path()) {
                     #[derive(serde::Deserialize)]
-                    struct Checkpoint {
+                    struct GroupCheckpoint {
                         weights: Vec<f32>,
                     }
+                    #[derive(serde::Deserialize)]
+                    struct Checkpoint {
+                        #[serde(default)]
+                        tick_count: u64,
+                        groups: HashMap<String, GroupCheckpoint>,
+                    }
                     if let Ok(cp) = serde_json::from_str::<Checkpoint>(&json) {
-                        let mut q_table = QTable::new();
-                        if q_table.set_weights(&cp.weights).is_some() {
-                            let mut model = ScenarioModel::new();
-                            model.q_tables.insert(ChannelGroup::Compute, q_table);
+                        let mut model = ScenarioModel::new();
+                        model.tick_count = cp.tick_count;
+                        let mut loaded = 0usize;
+                        for (name, gcp) in &cp.groups {
+                            if let Some(group) = ChannelGroup::from_name(name) {
+                                let mut q_table = QTable::new();
+                                if q_table.set_weights(&gcp.weights).is_some() {
+                                    model.q_tables.insert(group, q_table);
+                                    loaded += 1;
+                                }
+                            }
+                        }
+                        if loaded > 0 {
                             self.scenario_models.insert(scenario_id, model);
-                            log_info!("AI-native: loaded Q-table for scenario {} ({} weights)",
-                                scenario_id, cp.weights.len());
+                            log_info!("AI-native: loaded {} Q-table(s) for scenario {}",
+                                loaded, scenario_id);
                         }
                     }
                 }
