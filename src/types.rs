@@ -5,7 +5,7 @@ pub const MI_THERMALD_GLOBAL_MODE_FILE: &str = "/data/vendor/thermal/thermal-glo
 pub const MI_THERMALD_DUMP_FILE: &str = "/data/vendor/thermal/thermal.dump";
 pub const MI_THERMALD_LAST_DUMP_FILE: &str = "/data/vendor/thermal/last_thermal.dump";
 pub const MI_THERMALD_CONFIG_DIR: &str = "/data/vendor/thermal/config";
-pub const MI_THERMALD_DECRYPT_DIR: &str = "/data/local/tmp/thermald_decrypt";
+pub const MI_THERMALD_DECRYPT_DIR: &str = "/data/vendor/thermal/thermald_decrypt";
 
 pub const MI_PROP_SOC_MODEL: &str = "ro.soc.model";
 pub const MI_PROP_THERMAL_DATA_PATH: &str = "vendor.sys.thermal.data.path";
