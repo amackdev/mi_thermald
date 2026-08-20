@@ -43,14 +43,19 @@ impl SafetyMonitor {
         }
     }
 
-    pub fn check_action(&mut self, action: u8, sensors: &[Sensor], tick_count: u64) -> bool {
+    /// Pure safety predicate — does not record a violation. Actions 0/1 are
+    /// the lowest-frequency cooling actions and are always safe; 6-9 are the
+    /// high/max-performance actions (see the action→frequency mapping in the
+    /// README) and must never bypass the cpu/battery checks, since those are
+    /// exactly the actions that would make an active thermal emergency worse.
+    pub fn is_action_safe(&self, action: u8, sensors: &[Sensor]) -> bool {
         let cpu_over = self.cpu_over_limit(sensors);
         let battery_over = self.battery_over_limit(sensors);
         let battery_warm = self.battery_warm(sensors);
 
-        let safe = match action {
-            0 | 1 | 8 | 9 => true,  // Cooling/emergency always OK
-            6 | 7 => !cpu_over && !battery_over,  // High perf needs both safe
+        match action {
+            0 | 1 => true,
+            6 | 7 | 8 | 9 => !cpu_over && !battery_over,
             _ => {
                 // Mid-range actions: block if battery warming
                 if battery_warm && action >= 5 {
@@ -59,15 +64,26 @@ impl SafetyMonitor {
                     !cpu_over && !battery_over
                 }
             }
-        };
+        }
+    }
 
+    /// Records a violation (or clears a stale streak) without evaluating an
+    /// action. Callers that check several independent actions for the same
+    /// tick (e.g. one per cooling-channel group) should evaluate each with
+    /// `is_action_safe` and call this at most once per tick, so one thermal
+    /// moment doesn't get counted as several violations.
+    pub fn record_check(&mut self, safe: bool, tick_count: u64) {
         if !safe {
             self.violations = self.violations.saturating_add(1);
             self.last_violation_tick = tick_count;
         } else if self.violations > 0 && tick_count - self.last_violation_tick > VIOLATION_WINDOW_TICKS {
             self.violations = 0;
         }
+    }
 
+    pub fn check_action(&mut self, action: u8, sensors: &[Sensor], tick_count: u64) -> bool {
+        let safe = self.is_action_safe(action, sensors);
+        self.record_check(safe, tick_count);
         safe
     }
 
@@ -113,10 +129,16 @@ impl SafetyMonitor {
         Self::any_battery_sensor_over(sensors, warn)
     }
 
+    /// Matches only the actual battery *temperature* sensor (thermal_zone
+    /// "battery", in millidegrees C). A `.contains("battery")` match would
+    /// also catch `battery_voltage` (microvolts) and `battery_current`
+    /// (microamps) — both in the millions, which always exceeds any
+    /// temperature threshold here and pinned battery_over/battery_warm to
+    /// permanently true regardless of actual temperature.
     fn any_battery_sensor_over(sensors: &[Sensor], threshold: i32) -> bool {
         sensors.iter().any(|s| {
             let name = s.name.to_lowercase();
-            name.contains("battery")
+            name == "battery"
                 && s.last_temp_mc.load(Ordering::Relaxed) > threshold
         })
     }

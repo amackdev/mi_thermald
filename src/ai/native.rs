@@ -316,6 +316,12 @@ impl NativeController {
                 crate::ai::WorkloadMode::Benchmark => 1.0,
             };
 
+            // Without this, the SafetyMonitor stays pinned to its Light-mode
+            // default forever, so it judges Gaming/Benchmark battery temps
+            // against Light's much stricter thresholds and racks up false
+            // violations under real load.
+            self.safety_monitor.set_workload_mode(workload_mode);
+
             let state_array = self.feature_extractor.to_array(&state);
 
             if self.safety_monitor.is_disabled(global_tick_count) {
@@ -340,10 +346,12 @@ impl NativeController {
             let batt_temp_c = batt_temp as f32 / 10.0;
 
             let mut group_actions = HashMap::new();
+            let mut any_unsafe = false;
             for &group in &[ChannelGroup::Compute, ChannelGroup::Thermal, ChannelGroup::Charging, ChannelGroup::Display] {
                 let q_table = model.q_tables.entry(group).or_insert_with(QTable::new);
                 let action = q_table.select_action(&state_array);
-                let safe = self.safety_monitor.check_action(action, sensor_readings, global_tick_count);
+                let safe = self.safety_monitor.is_action_safe(action, sensor_readings);
+                any_unsafe |= !safe;
                 let mut final_action = if safe { action } else { 3u8 };
 
                 if group == ChannelGroup::Compute {
@@ -361,6 +369,12 @@ impl NativeController {
                 
                 group_actions.insert(group, final_action);
             }
+
+            // One violation per tick, not one per channel group — otherwise
+            // a single borderline thermal moment gets counted 4x and trips
+            // the disable threshold in seconds instead of genuinely distinct
+            // unsafe decisions over the 1-hour window.
+            self.safety_monitor.record_check(!any_unsafe, global_tick_count);
 
             let prev_state = model.last_state.clone();
             let prev_actions = model.last_actions.clone();
