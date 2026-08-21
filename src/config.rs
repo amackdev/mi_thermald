@@ -496,7 +496,6 @@ pub fn load_thermal_map(
 
     if sensors.is_empty() {
         EngineDiscovery::sensor_init(sensors);
-        *virtual_sensors = EngineDiscovery::vsns_init(sensors);
 
         // First call: if the target scenario doesn't define VIRTUAL-SENSOR0
         // (e.g. mgame), pre-load the default (sconfig=0) scenario first so

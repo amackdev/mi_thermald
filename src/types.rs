@@ -14,7 +14,6 @@ pub const MI_THERMALD_AES_KEY_STR: &[u8; 16] = b"thermalopenssl.h";
 
 pub const MI_MAX_SENSORS: usize = 128;
 pub const MI_MAX_CDEV: usize = 32;
-pub const MI_MAX_VSNS: usize = 16;
 pub const MI_MAX_CONFIGS: usize = 256;
 pub const MI_MAX_LEVELS: usize = 16;
 pub const MI_MAX_DEVICES_PER_BLOCK: usize = 16;

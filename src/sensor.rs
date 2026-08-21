@@ -95,7 +95,6 @@ impl EngineDiscovery {
             path: &'static str,
         }
         const EXTRA: &[ExtraSensor] = &[
-            ExtraSensor { name: "ambient_sensor_temp", path: "/sys/class/thermal/thermal_message/ambient_sensor_temp" },
             ExtraSensor { name: "connector_temp", path: "/sys/class/qcom-battery/connector_temp" },
             ExtraSensor { name: "BAT_SOC", path: "/sys/class/power_supply/battery/capacity" },
             ExtraSensor { name: "battery_current", path: "/sys/class/power_supply/battery/current_now" },
@@ -106,6 +105,10 @@ impl EngineDiscovery {
         for es in EXTRA {
             if sensors.len() >= MI_MAX_SENSORS {
                 break;
+            }
+            if !std::path::Path::new(es.path).exists() {
+                log_debug!("extra sensor not present, skipping: {} ({})", es.name, es.path);
+                continue;
             }
             let mut s = Sensor::new(es.name);
             s.path = es.path.to_string();
@@ -119,38 +122,6 @@ impl EngineDiscovery {
             sensors.push(s);
         }
     }
-
-    pub fn vsns_init(sensors: &mut Vec<Sensor>) -> Vec<usize> {
-        let mut virtual_sensors = Vec::new();
-        const VSN_PATHS: &[&str] = &[
-            "/sys/class/thermal/thermal_message/board_sensor_temp",
-            "/sys/class/thermal/thermal_message/board_sensor_second_temp",
-            "/sys/class/thermal/thermal_message/board_sensor_charge_temp",
-            "/sys/class/thermal/thermal_message/board_sensor_other_temp",
-            "/sys/class/thermal/thermal_message/ambient_sensor",
-            "/sys/class/thermal/thermal_message/charger_temp",
-            "/sys/class/thermal/thermal_message/display_therm_temp",
-            "/sys/class/thermal/thermal_message/dynamic_tj",
-        ];
-        for vp in VSN_PATHS {
-            if virtual_sensors.len() >= MI_MAX_VSNS || sensors.len() >= MI_MAX_SENSORS {
-                break;
-            }
-            let base = match vp.rsplit('/').next() {
-                Some(b) => b,
-                None => "vsn",
-            };
-            let mut s = Sensor::new(base);
-            s.path = vp.to_string();
-            s.type_ = SensorType::Virtual;
-            s.poll_ms = MI_POLL_INTERVAL_MS_DEFAULT;
-            virtual_sensors.push(sensors.len());
-            sensors.push(s);
-        }
-        virtual_sensors
-    }
-
-
 
     pub fn find_sensor(sensors: &[Sensor], virtual_sensors: &[usize], name: &str) -> Option<usize> {
         sensors.iter().position(|s| s.name == name)

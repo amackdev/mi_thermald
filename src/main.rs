@@ -284,7 +284,6 @@ impl Engine {
             log_info!("AI-native mode: skipping OEM config, discovering hardware");
 
             EngineDiscovery::sensor_init(&mut self.sensors);
-            self.virtual_sensors = EngineDiscovery::vsns_init(&mut self.sensors);
 
             let mut nc = ai::NativeController::new();
             nc.switch_scenario(self.current_scenario_idx);
