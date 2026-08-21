@@ -67,11 +67,6 @@ impl SafetyMonitor {
         }
     }
 
-    /// Records a violation (or clears a stale streak) without evaluating an
-    /// action. Callers that check several independent actions for the same
-    /// tick (e.g. one per cooling-channel group) should evaluate each with
-    /// `is_action_safe` and call this at most once per tick, so one thermal
-    /// moment doesn't get counted as several violations.
     pub fn record_check(&mut self, safe: bool, tick_count: u64) {
         if !safe {
             self.violations = self.violations.saturating_add(1);
@@ -98,6 +93,19 @@ impl SafetyMonitor {
 
     pub fn violations(&self) -> u32 {
         self.violations
+    }
+
+    /// True only for a genuine thermal emergency (CPU actually near its
+    /// redline) — as opposed to `is_action_safe` returning false, which also
+    /// fires routinely whenever the battery is merely above its context
+    /// warn/crit line and just means "the RL's proposed action got capped,"
+    /// not that anything dangerous happened. Only this should count toward
+    /// the violation counter that can permanently disable the controller;
+    /// otherwise an ordinary idle battery temp a fraction of a degree over
+    /// BATTERY_TEMP_IDLE_MC trips 10 "violations" in ~10 seconds even though
+    /// the safety layer capped every action correctly the whole time.
+    pub fn is_hazard(&self, sensors: &[Sensor]) -> bool {
+        self.cpu_over_limit(sensors)
     }
 
     fn cpu_over_limit(&self, sensors: &[Sensor]) -> bool {
@@ -129,12 +137,6 @@ impl SafetyMonitor {
         Self::any_battery_sensor_over(sensors, warn)
     }
 
-    /// Matches only the actual battery *temperature* sensor (thermal_zone
-    /// "battery", in millidegrees C). A `.contains("battery")` match would
-    /// also catch `battery_voltage` (microvolts) and `battery_current`
-    /// (microamps) — both in the millions, which always exceeds any
-    /// temperature threshold here and pinned battery_over/battery_warm to
-    /// permanently true regardless of actual temperature.
     fn any_battery_sensor_over(sensors: &[Sensor], threshold: i32) -> bool {
         sensors.iter().any(|s| {
             let name = s.name.to_lowercase();

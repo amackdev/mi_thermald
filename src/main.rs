@@ -492,10 +492,21 @@ impl Engine {
         }
 
         if let Some(ref mut nc) = self.native_controller {
-            if nc.is_enabled() {
-                nc.tick(&self.sensors);
-            } else if let Some(reason) = nc.disabled_reason() {
-                log_warn!("AI-native controller disabled: {}", reason);
+            // Charge-current thermal protection must run every tick
+            // regardless of whether the Q-learning action-selection path
+            // has safety-disabled itself.
+            nc.apply_charge_protection();
+
+            // Always call tick(), even while disabled: it owns the tick
+            // counter that SafetyMonitor's timed recovery depends on, and it
+            // re-enables itself internally once that window elapses. Gating
+            // this call on is_enabled() would freeze that counter forever,
+            // making the "temporary" safety disable permanent.
+            nc.tick(&self.sensors);
+            if !nc.is_enabled() {
+                if let Some(reason) = nc.disabled_reason() {
+                    log_warn!("AI-native controller disabled: {}", reason);
+                }
             }
         }
         0

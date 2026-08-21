@@ -210,7 +210,15 @@ impl FeatureExtractor {
                 cpu_temps.push(temp_normalized);
             } else if sensor.name.contains("board") {
                 board_temps.push(temp_normalized);
-            } else if sensor.name.contains("battery") {
+            } else if sensor.name == "battery" || sensor.name == "battery_temp" {
+                // Exact match only — a `.contains("battery")` match would also
+                // catch `battery_current` (µA) and `battery_voltage` (µV), both
+                // in the millions. Since `battery_voltage` is discovered after
+                // `battery_temp` (see EXTRA sensors in sensor.rs), it would win
+                // this last-write-wins scalar and pin t_battery at a clamped
+                // 1.0 ("100°C") forever, which in turn pins
+                // compute_batt_temp_reward's penalty at a constant -10.0
+                // regardless of the real battery temperature.
                 battery_temp = temp_normalized;
             } else if sensor.name.contains("ambient") {
                 ambient_temp = temp_normalized;
@@ -254,8 +262,13 @@ impl FeatureExtractor {
     }
 
     fn compute_temp_variance(&self, sensors: &[Sensor]) -> f32 {
+        // Exclude non-temperature "sensors" (battery current/voltage in
+        // µA/µV, SoC in %) — their raw magnitudes are wildly out of scale
+        // with real millidegree-C readings and would dominate the variance
+        // regardless of actual thermal spread.
         let temps: Vec<f32> = sensors
             .iter()
+            .filter(|s| !matches!(s.name.as_str(), "battery_current" | "battery_voltage" | "BAT_SOC"))
             .map(|s| s.last_temp_mc.load(Ordering::Relaxed) as f32 / 100000.0)
             .collect();
 

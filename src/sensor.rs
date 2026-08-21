@@ -6,15 +6,26 @@ pub mod sysfs {
     use std::io::{Read, Write};
 
     pub fn read_int(path: &str) -> i32 {
+        read_int_checked(path).unwrap_or(-1)
+    }
+
+    /// Like `read_int`, but distinguishes "failed to read" (`None`) from a
+    /// successfully read negative value (`Some(n)`, n < 0) — e.g.
+    /// `battery/current_now` legitimately reports negative µA while
+    /// charging. `read_int` collapses both cases to `-1`, which is fine for
+    /// callers where the value is always non-negative in practice, but
+    /// wrong for `Sensor::poll()`, which must not discard a real reading
+    /// just because it happens to be negative.
+    pub fn read_int_checked(path: &str) -> Option<i32> {
         let mut f = match File::open(path) {
             Ok(f) => f,
-            Err(_) => return -1,
+            Err(_) => return None,
         };
         let mut buf = String::new();
         if f.read_to_string(&mut buf).is_err() {
-            return -1;
+            return None;
         }
-        buf.trim().parse().unwrap_or(-1)
+        buf.trim().parse().ok()
     }
 
     pub fn read_string(path: &str) -> Option<String> {
@@ -40,14 +51,17 @@ pub mod sysfs {
 
 impl Sensor {
     pub fn poll(&self) -> i32 {
-        let v = sysfs::read_int(&self.path);
-        if v >= 0 {
-            self.last_temp_mc.store(v, Ordering::Relaxed);
-            log_debug!("sensor poll: {} ({}) = {}", self.name, self.path, v);
-        } else {
-            log_debug!("sensor poll failed: {} ({})", self.name, self.path);
+        match sysfs::read_int_checked(&self.path) {
+            Some(v) => {
+                self.last_temp_mc.store(v, Ordering::Relaxed);
+                log_debug!("sensor poll: {} ({}) = {}", self.name, self.path, v);
+                v
+            }
+            None => {
+                log_debug!("sensor poll failed: {} ({})", self.name, self.path);
+                -1
+            }
         }
-        v
     }
 }
 
@@ -97,11 +111,11 @@ impl EngineDiscovery {
             s.path = es.path.to_string();
             s.type_ = SensorType::ThermalZone;
             s.poll_ms = MI_POLL_INTERVAL_MS_DEFAULT;
-            let init_v = sysfs::read_int(&es.path);
-            if init_v >= 0 {
-                s.last_temp_mc.store(init_v, Ordering::Relaxed);
+            let init_v = sysfs::read_int_checked(&es.path);
+            if let Some(v) = init_v {
+                s.last_temp_mc.store(v, Ordering::Relaxed);
             }
-            log_info!("discovered extra sensor {} initial={}", es.name, init_v);
+            log_info!("discovered extra sensor {} initial={:?}", es.name, init_v);
             sensors.push(s);
         }
     }

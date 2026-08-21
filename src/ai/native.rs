@@ -14,21 +14,10 @@ use super::WorkloadMode;
 const SAVE_INTERVAL_TICKS: u64 = 1000;
 const DATA_DIR: &str = "/data/vendor/thermal/ai_data";
 
-// Derivative-aware charge throttling: smooths the per-tick battery temp
-// delta (ticks are ~1s, see main.rs's native-controller timer) into a
-// °C/s rate estimate, then uses it as an *additional* ceiling on top of
-// the absolute-temperature ladder in `apply_temp_based_charge`. This lets
-// the controller react to a battery that's heating up fast even before it
-// crosses the next absolute-temp tier, instead of only reacting after the
-// fact. It only ever tightens the cap (via `.min()`), never loosens it.
 const CHARGE_RATE_EMA_ALPHA: f32 = 0.3;
 const CHARGE_RATE_SAFE_C_PER_S: f32 = 0.03; // below this, no extra cap
 const CHARGE_RATE_FAST_C_PER_S: f32 = 0.12; // at/above this, cap floor kicks in
 const CHARGE_RATE_CAP_FLOOR: f32 = 0.5; // worst-case cap: 50% of max current
-
-/// Battery-temp throttle ladder: ascending (upper_bound_c, action) pairs.
-/// The first entry whose bound the temperature is still under wins; the
-/// last entry's bound must be f32::MAX so it always matches as a fallback.
 type TempLadder = &'static [(f32, u8)];
 
 // Benchmark allows the highest temps (up to 46°C).
@@ -37,12 +26,8 @@ const LADDER_BENCHMARK: TempLadder = &[(41.5, 9), (43.5, 8), (46.0, 6), (f32::MA
 const LADDER_PERFGAMING: TempLadder = &[(38.0, 9), (40.0, 8), (42.0, 7), (44.0, 6), (f32::MAX, 5)];
 // Gaming: high temps allowed (up to 42°C).
 const LADDER_GAMING: TempLadder = &[(36.0, 9), (38.0, 8), (40.0, 7), (42.0, 6), (f32::MAX, 5)];
-// Moderate: sustained mixed load rarely reaches these temps (higher freq
-// finishes micro-tasks faster, so heating is self-limiting) — the tail
-// fallback stays a mild throttle rather than dropping straight to 0.
 const LADDER_MODERATE: TempLadder =
     &[(36.0, 9), (38.0, 8), (40.0, 7), (41.0, 6), (42.0, 4), (45.0, 3), (f32::MAX, 2)];
-// Idle, Light: conservative thresholds.
 const LADDER_DEFAULT: TempLadder =
     &[(34.0, 9), (36.0, 8), (38.0, 7), (40.0, 6), (43.0, 4), (45.0, 2), (f32::MAX, 0)];
 
@@ -157,10 +142,6 @@ pub struct NativeController {
     charge_max_val: i32,
     sustained_load_ticks: u64,
     idle_load_ticks: u64,
-    // Monotonic tick counter shared across scenario switches — the
-    // per-scenario ScenarioModel::tick_count resets when switching to a
-    // fresh/less-used scenario, which would make the shared
-    // SafetyMonitor's tick-windowed violation tracking underflow.
     global_tick_count: u64,
 }
 
@@ -238,12 +219,23 @@ impl NativeController {
     }
 
     pub fn tick(&mut self, sensor_readings: &[Sensor]) -> bool {
-        if !self.enabled {
-            return false;
-        }
-
+        // global_tick_count must advance even while disabled, and this must
+        // still be reachable from a disabled state — otherwise
+        // SafetyMonitor's VIOLATION_WINDOW_TICKS-based recovery (see
+        // `is_disabled`) can never actually elapse, turning what's designed
+        // as a temporary circuit breaker into a permanent one that only
+        // clears on a daemon restart.
         self.global_tick_count += 1;
         let global_tick_count = self.global_tick_count;
+
+        if !self.enabled {
+            if self.safety_monitor.is_disabled(global_tick_count) {
+                return false;
+            }
+            log_warn!("AI-native: safety violation window elapsed, re-enabling controller");
+            self.enabled = true;
+            self.disabled_reason = None;
+        }
 
         let (group_actions, state, prev_state, prev_actions) = {
             let model = self.scenario_models
@@ -288,8 +280,6 @@ impl NativeController {
                 state.charge_current_ratio = ch.value as f32 / ch.max_val.max(1) as f32;
             }
 
-            // Sustained load detection: cpu_load is scheduler busyness,
-            // independent of frequency — works even if we're capping.
             if state.cpu_load > 0.44 {
                 self.sustained_load_ticks = self.sustained_load_ticks.saturating_add(1).min(100);
                 self.idle_load_ticks = 0;
@@ -316,10 +306,6 @@ impl NativeController {
                 crate::ai::WorkloadMode::Benchmark => 1.0,
             };
 
-            // Without this, the SafetyMonitor stays pinned to its Light-mode
-            // default forever, so it judges Gaming/Benchmark battery temps
-            // against Light's much stricter thresholds and racks up false
-            // violations under real load.
             self.safety_monitor.set_workload_mode(workload_mode);
 
             let state_array = self.feature_extractor.to_array(&state);
@@ -334,9 +320,6 @@ impl NativeController {
                 return false;
             }
 
-            // Heavy load is true if:
-            // 1. Sustained CPU load >= 3 ticks (sensor-based), OR
-            // 2. Workload mode is Gaming/Benchmark (sconfig instant detection)
             let is_heavy_load = self.sustained_load_ticks >= 3
                 || matches!(workload_mode, crate::ai::WorkloadMode::Gaming | crate::ai::WorkloadMode::PerfGaming | crate::ai::WorkloadMode::Benchmark);
 
@@ -346,12 +329,10 @@ impl NativeController {
             let batt_temp_c = batt_temp as f32 / 10.0;
 
             let mut group_actions = HashMap::new();
-            let mut any_unsafe = false;
             for &group in &[ChannelGroup::Compute, ChannelGroup::Thermal, ChannelGroup::Charging, ChannelGroup::Display] {
                 let q_table = model.q_tables.entry(group).or_insert_with(QTable::new);
                 let action = q_table.select_action(&state_array);
                 let safe = self.safety_monitor.is_action_safe(action, sensor_readings);
-                any_unsafe |= !safe;
                 let mut final_action = if safe { action } else { 3u8 };
 
                 if group == ChannelGroup::Compute {
@@ -370,11 +351,17 @@ impl NativeController {
                 group_actions.insert(group, final_action);
             }
 
-            // One violation per tick, not one per channel group — otherwise
-            // a single borderline thermal moment gets counted 4x and trips
-            // the disable threshold in seconds instead of genuinely distinct
-            // unsafe decisions over the 1-hour window.
-            self.safety_monitor.record_check(!any_unsafe, global_tick_count);
+            // Only a genuine hazard (CPU near its redline) counts as a
+            // violation — not "battery is a little over its context warn/crit
+            // line," which `is_action_safe` also blocks on above, but which
+            // is the safety layer correctly capping the action, not a
+            // violation of it. Counting every capped action here meant an
+            // ordinary idle battery temp a fraction of a degree over
+            // BATTERY_TEMP_IDLE_MC tripped 10 "violations" in ~10 seconds and
+            // permanently disabled the controller for a condition that was
+            // never actually dangerous.
+            let hazard = self.safety_monitor.is_hazard(sensor_readings);
+            self.safety_monitor.record_check(!hazard, global_tick_count);
 
             let prev_state = model.last_state.clone();
             let prev_actions = model.last_actions.clone();
@@ -407,9 +394,6 @@ impl NativeController {
                 
             for &group in group_actions.keys() {
                 if let Some(&la) = prev_actions.get(&group) {
-                    // Credit/blame the action that actually produced this
-                    // transition (`la`, taken last tick), not the new action
-                    // just selected for the next tick.
                     let reward = self.reward_calculator.compute_group_reward(ls, group, la as i32);
                     let q_table = model.q_tables.entry(group).or_insert_with(QTable::new);
                     q_table.update(&state_array, la, reward, &next_array);
@@ -612,9 +596,11 @@ impl NativeController {
         }
     }
 
-    fn apply_grouped_actions(&mut self, actions: &HashMap<ChannelGroup, u8>, sensors: &[Sensor]) {
+    pub fn apply_charge_protection(&mut self) {
         self.apply_temp_based_charge();
+    }
 
+    fn apply_grouped_actions(&mut self, actions: &HashMap<ChannelGroup, u8>, sensors: &[Sensor]) {
         for ch in &mut self.channels {
             let action = *actions.get(&ch.group).unwrap_or(&9);
 
@@ -760,10 +746,6 @@ impl NativeController {
             return;
         }
 
-        // Smooth the per-tick delta into a °C/s rate estimate. Skip the very
-        // first sample after a cold start / charging resume — there's no
-        // valid baseline yet and a stale last_charge_temp would produce a
-        // bogus spike.
         if self.last_charge_temp > -900 {
             let raw_rate = (batt_temp - self.last_charge_temp) as f32 / 10.0;
             self.charge_temp_rate_ema =
@@ -805,11 +787,6 @@ impl NativeController {
             max  // <32°C: full speed
         };
 
-        // Derivative-aware ceiling: if the battery is heating up fast, pull
-        // the cap down below whatever the absolute-temp ladder above still
-        // allows, so we react to the trend instead of waiting for it to
-        // cross into the next tier. Only rising temps count; a battery
-        // that's cooling gets no extra cap.
         let rate = self.charge_temp_rate_ema.max(0.0);
         let rate_t = ((rate - CHARGE_RATE_SAFE_C_PER_S)
             / (CHARGE_RATE_FAST_C_PER_S - CHARGE_RATE_SAFE_C_PER_S))
