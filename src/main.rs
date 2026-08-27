@@ -722,8 +722,8 @@ fn main() {
     let bc = boot_completed.clone();
     threads.push(thread::spawn(move || thread_bcl_init(s, bc)));
 
-    // Web server thread
-    {
+    // Web server thread (only when debug property is set)
+    if is_debug_enabled() {
         let e = engine.clone();
         let s = shutdown.clone();
         threads.push(thread::spawn(move || web::thread_web_server(e, s)));
