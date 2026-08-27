@@ -11,6 +11,7 @@ mod algorithm;
 mod action;
 mod ai;
 mod thermal_profile;
+mod web;
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -695,6 +696,13 @@ fn main() {
     let s = shutdown.clone();
     let bc = boot_completed.clone();
     threads.push(thread::spawn(move || thread_bcl_init(s, bc)));
+
+    // Web server thread
+    {
+        let e = engine.clone();
+        let s = shutdown.clone();
+        threads.push(thread::spawn(move || web::thread_web_server(e, s)));
+    }
 
     // Setup epoll
     let epoll_fd: RawFd;
