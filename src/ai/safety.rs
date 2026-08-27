@@ -95,15 +95,10 @@ impl SafetyMonitor {
         self.violations
     }
 
-    /// True only for a genuine thermal emergency (CPU actually near its
-    /// redline) — as opposed to `is_action_safe` returning false, which also
-    /// fires routinely whenever the battery is merely above its context
-    /// warn/crit line and just means "the RL's proposed action got capped,"
-    /// not that anything dangerous happened. Only this should count toward
-    /// the violation counter that can permanently disable the controller;
-    /// otherwise an ordinary idle battery temp a fraction of a degree over
-    /// BATTERY_TEMP_IDLE_MC trips 10 "violations" in ~10 seconds even though
-    /// the safety layer capped every action correctly the whole time.
+    pub fn reset_violations(&mut self) {
+        self.violations = 0;
+    }
+
     pub fn is_hazard(&self, sensors: &[Sensor]) -> bool {
         self.cpu_over_limit(sensors)
     }

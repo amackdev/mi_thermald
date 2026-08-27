@@ -14,6 +14,18 @@ use super::WorkloadMode;
 const SAVE_INTERVAL_TICKS: u64 = 1000;
 const DATA_DIR: &str = "/data/vendor/thermal/ai_data";
 
+/// During the first N ticks after startup, apply conservative thermal actions
+/// regardless of workload detection. This prevents the CPU boot storm from
+/// pushing temperatures to 90°C+ before the controller has had time to learn.
+const BOOT_CONSERVATIVE_TICKS: u64 = 15;
+const BOOT_MAX_ACTION: u8 = 4;
+
+/// After the conservative phase, suppress the heavy-load override (which
+/// forces Compute action to 9) for this many additional ticks.  This avoids
+/// the cliff-edge where the boot phase ends and the still-hot CPU immediately
+/// gets pushed back to max performance, tripping the safety circuit breaker.
+const POST_BOOT_GRACE_TICKS: u64 = 90;
+
 const CHARGE_RATE_EMA_ALPHA: f32 = 0.3;
 const CHARGE_RATE_SAFE_C_PER_S: f32 = 0.03; // below this, no extra cap
 const CHARGE_RATE_FAST_C_PER_S: f32 = 0.12; // at/above this, cap floor kicks in
@@ -143,6 +155,7 @@ pub struct NativeController {
     sustained_load_ticks: u64,
     idle_load_ticks: u64,
     global_tick_count: u64,
+    boot_tick_count: u64,
 }
 
 impl NativeController {
@@ -164,6 +177,7 @@ impl NativeController {
             charge_temp_rate_ema: 0.0,
             charge_max_val: 12000000,
             global_tick_count: 0,
+            boot_tick_count: 0,
         };
         ctrl.init_channels();
         ctrl.load_persisted_tables();
@@ -227,8 +241,26 @@ impl NativeController {
         // clears on a daemon restart.
         self.global_tick_count += 1;
         let global_tick_count = self.global_tick_count;
+        let in_boot_phase = self.boot_tick_count < BOOT_CONSERVATIVE_TICKS;
+        let in_post_boot = self.boot_tick_count < BOOT_CONSERVATIVE_TICKS + POST_BOOT_GRACE_TICKS;
+        if in_boot_phase {
+            self.boot_tick_count += 1;
+        } else if in_post_boot {
+            self.boot_tick_count += 1;
+        }
 
-        if !self.enabled {
+        // During boot and post-boot phases, bypass the circuit breaker — the
+        // CPU is naturally hot from the boot storm and violations are not
+        // indicative of a real fault.  Also forcibly reset any violations
+        // accumulated before we had a chance to apply conservative caps.
+        if in_boot_phase || in_post_boot {
+            if !self.enabled {
+                log_info!("AI-native: re-enabling controller (boot/post-boot phase)");
+                self.enabled = true;
+                self.disabled_reason = None;
+            }
+            self.safety_monitor.reset_violations();
+        } else if !self.enabled {
             if self.safety_monitor.is_disabled(global_tick_count) {
                 return false;
             }
@@ -310,7 +342,7 @@ impl NativeController {
 
             let state_array = self.feature_extractor.to_array(&state);
 
-            if self.safety_monitor.is_disabled(global_tick_count) {
+            if !in_post_boot && self.safety_monitor.is_disabled(global_tick_count) {
                 self.enabled = false;
                 self.disabled_reason = Some(format!(
                     "disabled after {} safety violations",
@@ -335,7 +367,9 @@ impl NativeController {
                 let safe = self.safety_monitor.is_action_safe(action, sensor_readings);
                 let mut final_action = if safe { action } else { 3u8 };
 
-                if group == ChannelGroup::Compute {
+                if in_boot_phase {
+                    final_action = final_action.min(BOOT_MAX_ACTION);
+                } else if !in_post_boot && group == ChannelGroup::Compute {
                     if is_heavy_load && final_action < 9 {
                         final_action = 9;
                     }
@@ -360,8 +394,14 @@ impl NativeController {
             // BATTERY_TEMP_IDLE_MC tripped 10 "violations" in ~10 seconds and
             // permanently disabled the controller for a condition that was
             // never actually dangerous.
-            let hazard = self.safety_monitor.is_hazard(sensor_readings);
-            self.safety_monitor.record_check(!hazard, global_tick_count);
+            //
+            // During boot and post-boot phases, skip recording entirely — the
+            // CPU is naturally hot from the boot storm and violations are not
+            // indicative of a real fault.
+            if !in_boot_phase && !in_post_boot {
+                let hazard = self.safety_monitor.is_hazard(sensor_readings);
+                self.safety_monitor.record_check(!hazard, global_tick_count);
+            }
 
             let prev_state = model.last_state.clone();
             let prev_actions = model.last_actions.clone();

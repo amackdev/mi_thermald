@@ -301,6 +301,12 @@ impl Engine {
             log_info!("thermald started ({} sensors, {} instances)",
                 self.sensors.len(), self.instances.len());
 
+            // Apply conservative CPU freq caps immediately at boot so the
+            // writer thread enforces them before the first thermal tick fires
+            // (~1s later). Without this, the CPU runs at hardware-max for
+            // the entire first second and temperatures spike to 90°C+.
+            Self::apply_boot_freq_caps();
+
             if ai_engine_enabled {
                 match ai::AIEngine::new() {
                     Ok(engine) => {
@@ -315,6 +321,25 @@ impl Engine {
         }
 
         0
+    }
+
+    /// Write conservative CPU frequency caps immediately at startup.
+    /// The `thread_cpu_freq_writer` loop reads these atomics every 50ms,
+    /// so the caps take effect well before the first thermal tick (~1s).
+    fn apply_boot_freq_caps() {
+        // 60% of each cluster's max — enough for a fast boot, cool enough
+        // to avoid the 90°C+ spike that occurs when the CPU runs at full
+        // speed for the entire first second before thermal control kicks in.
+        let caps = [
+            ("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq", 1209600, &CPU_FREQ0_TARGET),
+            ("/sys/devices/system/cpu/cpufreq/policy3/scaling_max_freq", 1681920, &CPU_FREQ3_TARGET),
+            ("/sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq", 1808640, &CPU_FREQ7_TARGET),
+        ];
+        for (path, val, atomic) in &caps {
+            atomic.store(*val, Ordering::Relaxed);
+            sysfs::write_int(path, *val);
+        }
+        log_info!("boot freq caps applied: policy0=1209 policy3=1681 policy7=1808 MHz");
     }
 
     fn setup_signals(&self) {
