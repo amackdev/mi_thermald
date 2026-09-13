@@ -31,7 +31,7 @@ fn device_to_action(dev: &str) -> ActionType {
         return ActionType::None;
     }
     match dev {
-        "gpu" => ActionType::GpuBoost,
+        "gpu" => ActionType::None,
         "battery" => ActionType::Bcl,
         "thermal_fcc_override" => ActionType::Fcc,
         "boost_limit" => ActionType::BoostLimit,

@@ -38,10 +38,8 @@ struct Experience {
     last_action_thermal: f32,
     last_action_charging: f32,
     last_action_display: f32,
-    gpu_freq_ratio: f32,
     brightness_ratio: f32,
     charge_current_ratio: f32,
-    t_gpu: f32,
     t_charger: f32,
     battery_current: f32,
     cpu_load: f32,
@@ -57,19 +55,19 @@ impl Experience {
          t_cpu_ma_10,t_board_ma_10,thermal_level_ma_10,cpu_freq_ratio,temp_headroom_cpu,\
          temp_headroom_battery,temp_variance,last_action,action_stability,\
          last_action_compute,last_action_thermal,last_action_charging,last_action_display,\
-         gpu_freq_ratio,brightness_ratio,charge_current_ratio,t_gpu,t_charger,battery_current,\
+         brightness_ratio,charge_current_ratio,t_charger,battery_current,\
          cpu_load,workload_mode,action,reward"
     }
 
     fn to_csv_row(&self) -> String {
-        format!("{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{:.4}",
+        format!("{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{:.4}",
             self.t_cpu_max, self.t_cpu_avg, self.t_board_max, self.t_battery, self.t_ambient,
             self.dt_cpu, self.dt_board, self.dt_battery, self.battery_soc, self.is_charging,
             self.screen_on, self.time_of_day, self.thermal_level_traditional, self.t_cpu_ma_10,
             self.t_board_ma_10, self.thermal_level_ma_10, self.cpu_freq_ratio, self.temp_headroom_cpu,
             self.temp_headroom_battery, self.temp_variance, self.last_action, self.action_stability,
             self.last_action_compute, self.last_action_thermal, self.last_action_charging, self.last_action_display,
-            self.gpu_freq_ratio, self.brightness_ratio, self.charge_current_ratio, self.t_gpu,
+            self.brightness_ratio, self.charge_current_ratio,
             self.t_charger, self.battery_current, self.cpu_load, self.workload_mode, self.action, self.reward)
     }
 }
@@ -129,10 +127,8 @@ impl DataCollector {
             last_action_thermal: state.last_action_thermal,
             last_action_charging: state.last_action_charging,
             last_action_display: state.last_action_display,
-            gpu_freq_ratio: state.gpu_freq_ratio,
             brightness_ratio: state.brightness_ratio,
             charge_current_ratio: state.charge_current_ratio,
-            t_gpu: state.t_gpu,
             t_charger: state.t_charger,
             battery_current: state.battery_current,
             cpu_load: state.cpu_load,

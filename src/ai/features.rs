@@ -48,7 +48,6 @@ pub struct StateVector {
     pub action_stability: f32, // How long at current level
 
     // Additional sensors
-    pub t_gpu: f32,          // GPU temperature if available
     pub t_charger: f32,      // Charger temperature if available
 
     // Power metrics
@@ -67,7 +66,6 @@ pub struct StateVector {
     pub last_action_display: f32,
 
     // Channel-specific readings
-    pub gpu_freq_ratio: f32,
     pub brightness_ratio: f32,
     pub charge_current_ratio: f32,
 }
@@ -107,7 +105,7 @@ impl FeatureExtractor {
 
     pub fn extract(&mut self, sensors: &[Sensor], instance: &Instance, traditional_level: i32) -> StateVector {
         // Extract temperature values
-        let (t_cpu_max, t_cpu_avg, t_board_max, t_battery, t_ambient, t_gpu, t_charger) =
+        let (t_cpu_max, t_cpu_avg, t_board_max, t_battery, t_ambient, t_charger) =
             self.extract_temperatures(sensors);
 
         // Compute derivatives
@@ -179,7 +177,6 @@ impl FeatureExtractor {
             temp_variance,
             last_action: 0.0, // TODO: Track from previous tick
             action_stability: 0.0, // TODO: Track ticks at current level
-            t_gpu,
             t_charger,
             battery_current,
             cpu_load,
@@ -188,18 +185,16 @@ impl FeatureExtractor {
             last_action_thermal: 0.0,
             last_action_charging: 0.0,
             last_action_display: 0.0,
-            gpu_freq_ratio: 0.0,
             brightness_ratio: 0.0,
             charge_current_ratio: 0.0,
         }
     }
 
-    fn extract_temperatures(&self, sensors: &[Sensor]) -> (f32, f32, f32, f32, f32, f32, f32) {
+    fn extract_temperatures(&self, sensors: &[Sensor]) -> (f32, f32, f32, f32, f32, f32) {
         let mut cpu_temps = Vec::new();
         let mut board_temps = Vec::new();
         let mut battery_temp = 0.0;
         let mut ambient_temp = 0.0;
-        let mut gpu_temp = 0.0;
         let mut charger_temp = 0.0;
 
         for sensor in sensors {
@@ -222,8 +217,6 @@ impl FeatureExtractor {
                 battery_temp = temp_normalized;
             } else if sensor.name.contains("ambient") {
                 ambient_temp = temp_normalized;
-            } else if sensor.name.contains("gpu") || sensor.name.contains("kgsl") {
-                gpu_temp = temp_normalized;
             } else if sensor.name.contains("charger") {
                 charger_temp = temp_normalized;
             }
@@ -237,7 +230,7 @@ impl FeatureExtractor {
         };
         let t_board_max = board_temps.iter().cloned().fold(0.0f32, f32::max);
 
-        (t_cpu_max, t_cpu_avg, t_board_max, battery_temp, ambient_temp, gpu_temp, charger_temp)
+        (t_cpu_max, t_cpu_avg, t_board_max, battery_temp, ambient_temp, charger_temp)
     }
 
     fn extract_battery_info(&self, sensors: &[Sensor]) -> (f32, f32, f32) {
@@ -388,7 +381,6 @@ impl FeatureExtractor {
             state.temp_variance,
             state.last_action,
             state.action_stability,
-            state.t_gpu,
             state.t_charger,
             state.battery_current,
             state.cpu_load,
@@ -397,7 +389,6 @@ impl FeatureExtractor {
             state.last_action_thermal,
             state.last_action_charging,
             state.last_action_display,
-            state.gpu_freq_ratio,
             state.brightness_ratio,
             state.charge_current_ratio,
         ]

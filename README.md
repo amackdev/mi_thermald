@@ -1,6 +1,6 @@
 # mi_thermald
 
-Rust port of Xiaomi's userspace thermal daemon (`thermald`) — the thermal management engine found on Xiaomi Android devices. Includes a **Q-learning AI layer** that adaptively manages CPU/GPU frequency, charging current, and display brightness based on live thermal state and detected workload.
+Rust port of Xiaomi's userspace thermal daemon (`thermald`) — the thermal management engine found on Xiaomi Android devices. Includes a **Q-learning AI layer** that adaptively manages CPU frequency, charging current, and display brightness based on live thermal state and detected workload.
 
 ## Architecture
 
@@ -12,14 +12,14 @@ mi_thermald
 │   ├── sensor.rs          # Thermal zone / sensor discovery via sysfs
 │   ├── config.rs          # OEM thermal config loading (AES-CBC decryption)
 │   ├── algorithm.rs       # Traditional threshold-based thermal evaluation
-│   ├── action.rs          # Action sysfs writers (cpufreq, GPU, BCL, FCC, ...)
+│   ├── action.rs          # Action sysfs writers (cpufreq, BCL, FCC, ...)
 │   ├── thermal_profile.rs # sconfig-node reader, profile ID → workload mode
 │   ├── log_macros.rs      # Logging macros (log_info!, log_debug!, etc.)
 │   └── ai/
 │       ├── mod.rs            # Module re-exports + shared action-interpolation helper
 │       ├── engine.rs         # AIEngine — single Q-table, augments traditional config mode
 │       ├── native.rs         # NativeController — per-channel-group Q-tables, pure AI mode
-│       ├── features.rs       # 34-dim state vector + feature extraction
+│       ├── features.rs       # 32-dim state vector + feature extraction
 │       ├── workload.rs       # Workload classification (Idle→Benchmark)
 │       ├── qtable.rs         # Q-learning with tile coding
 │       ├── tile_coding.rs    # Hash-based tile coding for continuous state
@@ -36,13 +36,13 @@ Two mutually exclusive modes, selected by the Android property `ro.vendor.mi_the
 - Loads Xiaomi's OEM thermal config files (AES-CBC encrypted) from the scenario selected by the `sconfig` sysfs node
 - Evaluates threshold-based instances per sensor (Monitor/SS/SIC/Simulated algorithms, `algorithm.rs`)
 - If `ro.vendor.mi_thermal_ai=engine`, an `AIEngine` (single Q-table) can override the traditional thermal level per-instance
-- Actions applied: cpufreq scaling_max, GPU boost, BCL current, FCC, hotplug, brightness, etc.
+- Actions applied: cpufreq scaling_max, BCL current, FCC, hotplug, brightness, etc.
 
 ### 2. Pure AI-native mode (`true` / `1`)
 - Bypasses all OEM config files entirely
 - Self-discovers thermal zones and writable cooling channels via sysfs at startup
 - `NativeController` groups channels into four independent control domains — `Compute`, `Thermal`, `Charging`, `Display` — each with its **own** Q-table per scenario (scenario = device mode reported by the `sconfig` sysfs node)
-- Directly writes CPU frequency targets, GPU max frequency, `balance_mode`/`boost`, backlight, and battery charge current
+- Directly writes CPU frequency targets, `balance_mode`/`boost`, backlight, and battery charge current
 - Dedicated 50ms CPU-frequency writer thread and 200ms charge-current writer thread for low-latency, lock-free updates (via shared atomics), independent of the 1s decision tick
 
 ## AI Module: Deep Dive
@@ -61,7 +61,7 @@ Both controllers implement **Q-learning with tile-coding function approximation*
 | Tiles per dimension | 4 |
 | Hash table size | 262,144 (2¹⁸) |
 
-### State Space (34 dimensions)
+### State Space (32 dimensions)
 
 | # | Feature | Description |
 |---|---------|-------------|
@@ -74,14 +74,13 @@ Both controllers implement **Q-learning with tile-coding function approximation*
 | 18–19 | `temp_headroom_cpu`, `temp_headroom_battery` | Headroom to throttle thresholds |
 | 20 | `temp_variance` | Temperature volatility (workload proxy) |
 | 21–22 | `last_action`, `action_stability` | Action history (compute channel) |
-| 23–24 | `t_gpu`, `t_charger` | Additional temperatures |
-| 25 | `battery_current` | Charge/discharge current |
-| 26 | `cpu_load` | CPU utilization from `/proc/stat` |
-| 27 | `workload_mode` | Workload classification, 0 (Idle) – 1 (Benchmark) |
-| 28–31 | `last_action_compute/thermal/charging/display` | Per-group action history (native mode) |
-| 32 | `gpu_freq_ratio` | Current / max GPU devfreq |
-| 33 | `brightness_ratio` | Current / max backlight |
-| 34 | `charge_current_ratio` | Current / max charge current |
+| 23 | `t_charger` | Charger temperature |
+| 24 | `battery_current` | Charge/discharge current |
+| 25 | `cpu_load` | CPU utilization from `/proc/stat` |
+| 26 | `workload_mode` | Workload classification, 0 (Idle) – 1 (Benchmark) |
+| 27–30 | `last_action_compute/thermal/charging/display` | Per-group action history (native mode) |
+| 31 | `brightness_ratio` | Current / max backlight |
+| 32 | `charge_current_ratio` | Current / max charge current |
 
 Temperatures are matched by **exact sensor name**, not substring: `t_battery` only accepts a sensor literally named `battery` (thermal zone type) or `battery_temp` (the synthesized `/sys/class/power_supply/battery/temp` sensor). A `.contains("battery")` match would also catch `battery_current` (µA) and `battery_voltage` (µV) — both numerically in the millions — and silently corrupt the feature. The same two sensors, plus `BAT_SOC` (a percentage, not a temperature), are excluded from the `temp_variance` calculation for the same reason.
 
@@ -94,7 +93,6 @@ Discovered at startup via `discover_hardware_channels()`, each assigned to a `Ch
 | `balance_mode` | Compute | `action * 7 / 9`, clamped to [0,7] |
 | `boost` | Compute | always written `1` — `balance_mode` handles cooling |
 | `cpu_freq0/3/7` (scaling_max_freq) | Compute | `lerp_by_action` across [30% of hw max, hw max] |
-| `gpu` (devfreq max_freq) | Compute | `lerp_by_action` across [min, max available freq] |
 | `backlight` | Display | not directly written (display level driven by config/PID only) |
 | `charge_current` | Charging | not directly written by the Q-table — see [Charging Current Control](#charging-current-control-nativecontroller-only) |
 
@@ -102,7 +100,7 @@ If the active scenario's config defines a `sic` (PID) block targeting one of the
 
 ### Action → Frequency Mapping
 
-CPU/GPU frequency channels are evenly distributed across their range:
+CPU frequency channels are evenly distributed across their range:
 
 ```
 freq = min_freq + (action * (max_freq - min_freq) / 9)
@@ -136,8 +134,8 @@ mode flapping.
 |------|----------|-------------|-------------------|
 | Idle | Screen off OR `cpu_load < 0.1` | 0.5 | 5.0 |
 | Light | `cpu_load > 0.1` | 1.0 | 4.0 |
-| Moderate | `cpu_load > 0.3` or GPU > 0.5 | 1.5 | 3.5 |
-| Gaming | 30s sustained CPU > 0.5 + GPU > 0.7 | 3.0 | 2.0 |
+| Moderate | `cpu_load > 0.3` | 1.5 | 3.5 |
+| Gaming | 30s sustained CPU > 0.5 (with high frequency ratio) | 3.0 | 2.0 |
 | PerfGaming | sconfig profile 18/39 (perf-heavy gaming) | 3.5 | 1.75 |
 | Benchmark | 60s sustained CPU > 0.8, or sconfig profile 6/10/40 | 4.0 | 1.5 |
 
@@ -158,7 +156,7 @@ reward = temp_penalty + batt_temp_penalty
 
 | Group | Reward terms |
 |-------|--------------|
-| Compute | `temp_penalty + perf_weight*(cpu_freq_ratio + 0.5*gpu_freq_ratio) - stability_penalty` |
+| Compute | `temp_penalty + perf_weight*cpu_freq_ratio - stability_penalty` |
 | Thermal | `temp_penalty - stability_penalty` |
 | Charging | `batt_temp_weight*batt_temp_penalty + battery_weight*charge_current_ratio - stability_penalty` |
 | Display | `0.5*temp_penalty + 2.0*brightness_ratio - stability_penalty` |
@@ -309,5 +307,4 @@ OEM thermal configs live in `/data/vendor/thermal/config/` (or `/vendor/etc/`, `
 | `/data/vendor/thermal/ai_data/` | AI Q-table checkpoints + experience logs |
 | `/sys/devices/system/cpu/cpufreq/policy{0,3,7}/scaling_max_freq` | CPU freq targets |
 | `/sys/class/power_supply/battery/constant_charge_current` | Charge current target |
-| `/sys/class/kgsl/kgsl-3d0/devfreq/max_freq` | GPU max frequency target |
 | `/sys/class/thermal/thermal_message/sconfig` | Thermal profile ID (instant workload detection + scenario selection) |

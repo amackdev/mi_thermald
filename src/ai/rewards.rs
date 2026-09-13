@@ -55,7 +55,7 @@ impl RewardCalculator {
 
         match group {
             crate::ai::native::ChannelGroup::Compute => {
-                let perf_reward = state.cpu_freq_ratio + 0.5 * state.gpu_freq_ratio;
+                let perf_reward = state.cpu_freq_ratio;
                 self.w_temp * temp_penalty + perf_weight * perf_reward - self.w_stab * stab_penalty
             }
             crate::ai::native::ChannelGroup::Thermal => {

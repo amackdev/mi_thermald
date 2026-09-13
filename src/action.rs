@@ -1,5 +1,3 @@
-use std::fs;
-
 use crate::types::*;
 use crate::sensor::sysfs;
 
@@ -31,7 +29,6 @@ pub fn action_apply(a: &Action) -> i32 {
     match a.type_ {
         ActionType::CpuFreq => set_cpu_freq(&a.target, a.value),
         ActionType::CpuHotplug => set_cpu_hotplug(&a.target, a.value != 0),
-        ActionType::GpuBoost => set_gpu_boost(a.value),
         ActionType::IpaBoost => set_ipa_boost(a.value),
         ActionType::Bcl => set_bcl(a.value),
         ActionType::TempAware => set_temp_aware(a.value != 0),
@@ -88,30 +85,6 @@ pub fn set_cpu_hotplug(cpu: &str, online: bool) -> i32 {
         log_debug!("set cpu{} online to {}", n, online);
     }
     if ok { 0 } else { -1 }
-}
-
-pub fn set_gpu_boost(level: i32) -> i32 {
-    let mut rc = 0;
-    let devfreq_dir = "/sys/class/devfreq/";
-    if let Ok(entries) = fs::read_dir(devfreq_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy().to_string();
-            if name_str.contains("kgsl-busmon") {
-                continue;
-            }
-            if name_str.contains("kgsl")
-                || name_str.starts_with("gpu-")
-                || name_str.starts_with("gpuss-")
-            {
-                let max_path = entry.path().join("max_freq");
-                if !sysfs::write_int(max_path.to_str().unwrap_or(""), level) {
-                    rc = -1;
-                }
-            }
-        }
-    }
-    rc
 }
 
 pub fn set_ipa_boost(level: i32) -> i32 {

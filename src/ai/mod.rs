@@ -13,7 +13,7 @@ mod workload;
 
 pub use engine::AIEngine;
 pub use native::NativeController;
-pub use workload::{WorkloadDetector, WorkloadMode};
+pub use workload::WorkloadMode;
 
 /// Linearly interpolate across the 10 discrete actions (0..=9) into
 /// `base..=base+span`. `ascending=true` maps action 0 -> base, 9 -> base+span

@@ -29,7 +29,6 @@ impl WorkloadMode {
 pub struct WorkloadDetector {
     // Detection state
     high_load_ticks: u64,
-    sustained_gpu_ticks: u64,
     last_mode: WorkloadMode,
 
     // Hysteresis to prevent mode flapping
@@ -56,7 +55,6 @@ impl WorkloadDetector {
 
         WorkloadDetector {
             high_load_ticks: 0,
-            sustained_gpu_ticks: 0,
             last_mode: WorkloadMode::Light,
             ticks_in_current_mode: 0,
             mode_switch_threshold: 10,  // 10 seconds before mode switch
@@ -72,7 +70,6 @@ impl WorkloadDetector {
         &mut self,
         cpu_load: f32,
         cpu_freq_ratio: f32,
-        gpu_freq_ratio: f32,
         temp_variance: f32,
         screen_on: bool,
     ) -> WorkloadMode {
@@ -86,7 +83,6 @@ impl WorkloadDetector {
                     }
                     // Reset counters to allow fresh sensor-based detection
                     self.high_load_ticks = 0;
-                    self.sustained_gpu_ticks = 0;
                     self.ticks_in_current_mode = 0;
                     self.force_mode_update = true;  // Bypass hysteresis on next update
                     // Fall through to sensor detection
@@ -104,7 +100,7 @@ impl WorkloadDetector {
         }
 
         // Priority 2: Fall back to sensor-based detection
-        self.detect_workload_sensors(cpu_load, cpu_freq_ratio, gpu_freq_ratio, temp_variance, screen_on)
+        self.detect_workload_sensors(cpu_load, cpu_freq_ratio, temp_variance, screen_on)
     }
 
     /// Original sensor-based workload detection
@@ -112,39 +108,34 @@ impl WorkloadDetector {
         &mut self,
         cpu_load: f32,
         cpu_freq_ratio: f32,
-        gpu_freq_ratio: f32,
         temp_variance: f32,
         screen_on: bool,
     ) -> WorkloadMode {
         // Reset counters if screen off
         if !screen_on {
             self.high_load_ticks = 0;
-            self.sustained_gpu_ticks = 0;
             return self.update_mode(WorkloadMode::Idle);
         }
 
-        // Detect gaming patterns
+        // Detect sustained high CPU demand (frequency + load)
         let high_cpu = cpu_load > 0.5 && cpu_freq_ratio > 0.7;
-        let high_gpu = gpu_freq_ratio > 0.7;
         let high_variance = temp_variance > 0.5;
 
-        // Update counters
-        if high_cpu && high_gpu {
+        // Update counter
+        if high_cpu {
             self.high_load_ticks += 1;
-            self.sustained_gpu_ticks += 1;
         } else {
             self.high_load_ticks = self.high_load_ticks.saturating_sub(2);
-            self.sustained_gpu_ticks = self.sustained_gpu_ticks.saturating_sub(1);
         }
 
         // Determine workload mode with hysteresis
-        let detected_mode = if self.sustained_gpu_ticks > 30 && high_variance {
-            // 30+ seconds of sustained GPU + CPU → Gaming
+        let detected_mode = if self.high_load_ticks > 30 && high_variance {
+            // 30+ seconds of sustained high CPU → Gaming
             WorkloadMode::Gaming
         } else if self.high_load_ticks > 60 && cpu_load > 0.8 {
             // 60+ seconds extreme load → Benchmark
             WorkloadMode::Benchmark
-        } else if cpu_load > 0.3 || gpu_freq_ratio > 0.5 {
+        } else if cpu_load > 0.3 {
             // Moderate activity
             WorkloadMode::Moderate
         } else if cpu_load > 0.1 {
@@ -184,21 +175,6 @@ impl WorkloadDetector {
                 log_debug!("Workload mode changed: {:?}", new_mode);
                 new_mode
             }
-        }
-    }
-
-    pub fn read_gpu_freq_ratio() -> f32 {
-        let cur = crate::sensor::sysfs::read_int(
-            "/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq"
-        );
-        let max = crate::sensor::sysfs::read_int(
-            "/sys/class/kgsl/kgsl-3d0/devfreq/max_freq"
-        );
-
-        if cur > 0 && max > 0 {
-            (cur as f32 / max as f32).clamp(0.0, 1.0)
-        } else {
-            0.0
         }
     }
 }

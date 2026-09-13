@@ -99,11 +99,9 @@ impl AIEngine {
         }
 
         // Detect workload mode
-        let gpu_freq_ratio = WorkloadDetector::read_gpu_freq_ratio();
         let workload_mode = self.workload_detector.detect_workload(
             state.cpu_load,
             state.cpu_freq_ratio,
-            gpu_freq_ratio,
             state.temp_variance,
             state.screen_on > 0.5,
         );
@@ -193,9 +191,6 @@ impl AIEngine {
                 ActionType::CpuFreq => self.action_to_cpu_freq(action, &cfg_action.target),
                 ActionType::CpuHotplug => {
                     if action == 0 { 0 } else { 1 }
-                }
-                ActionType::GpuBoost => {
-                    if action <= 1 { 0 } else { 1_100_000_000 }
                 }
                 _ => {
                     if cfg_action.value == 0 {

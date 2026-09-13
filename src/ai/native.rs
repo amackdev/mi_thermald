@@ -301,9 +301,6 @@ impl NativeController {
             state.last_action = state.last_action_compute;
             state.action_stability = model.action_stability;
 
-            let gpu_freq_ratio = crate::ai::WorkloadDetector::read_gpu_freq_ratio();
-            state.gpu_freq_ratio = gpu_freq_ratio;
-
             if let Some(ch) = self.channels.iter().find(|c| c.group == ChannelGroup::Display) {
                 let actual_brightness = crate::sensor::sysfs::read_int(&ch.path).max(0);
                 state.brightness_ratio = actual_brightness as f32 / ch.max_val.max(1) as f32;
@@ -325,7 +322,6 @@ impl NativeController {
             let workload_mode = self.workload_detector.detect_workload(
                 state.cpu_load,
                 state.cpu_freq_ratio,
-                gpu_freq_ratio,
                 state.temp_variance,
                 state.screen_on > 0.5,
             );
@@ -555,30 +551,6 @@ impl NativeController {
             }
         }
 
-        // GPU devfreq
-        let gpu_path = "/sys/class/kgsl/kgsl-3d0/devfreq/max_freq";
-        if std::path::Path::new(gpu_path).exists() {
-            let cur = crate::sensor::sysfs::read_int(gpu_path).max(0);
-            let available = crate::sensor::sysfs::read_string("/sys/class/kgsl/kgsl-3d0/devfreq/available_frequencies").unwrap_or_default();
-            let freqs: Vec<i32> = available.split_whitespace().filter_map(|s| s.parse().ok()).collect();
-            if !freqs.is_empty() {
-                let max_val = *freqs.iter().max().unwrap();
-                let min_val = *freqs.iter().min().unwrap();
-                self.channels.push(CoolingChannel {
-                    name: "gpu".into(),
-                    path: gpu_path.into(),
-                    action_type: ActionType::GpuBoost,
-                    group: ChannelGroup::Compute,
-                    value: if cur > 0 { cur } else { max_val },
-                    min_val,
-                    max_val,
-                    pid: None,
-                    pid_state: SicState::default(),
-                    sensor_name: None,
-                });
-            }
-        }
-
         // Backlight
         let bl_path = "/sys/class/backlight/panel0-backlight/brightness";
         if std::path::Path::new(bl_path).exists() {
@@ -627,7 +599,7 @@ impl NativeController {
                             triggers: b.threshold.trig.clone(),
                         });
                         ch.sensor_name = Some(b.sensor_name.clone());
-                        if ch.group == ChannelGroup::Compute && ch.name != "gpu" {
+                        if ch.group == ChannelGroup::Compute {
                             ch.group = ChannelGroup::Thermal;
                         }
                     }

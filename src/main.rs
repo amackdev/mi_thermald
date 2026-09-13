@@ -160,16 +160,6 @@ fn resolve_default_action_value(action: &mut Action) {
             let v = sysfs::read_int(&path);
             action.value = if v > 0 { v } else { 1 };
         }
-        ActionType::GpuBoost => {
-            let table = sysfs::read_string(
-                "/sys/class/kgsl/kgsl-3d0/freq_table_mhz"
-            ).unwrap_or_default();
-            let max_mhz: i32 = table.split_whitespace()
-                .next()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-            action.value = if max_mhz > 0 { max_mhz * 1_000_000 } else { 1_100_000_000 };
-        }
         ActionType::Bcl => {
             let v = sysfs::read_int(
                 "/sys/class/power_supply/battery/constant_charge_current"
