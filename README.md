@@ -1,6 +1,6 @@
 # mi_thermald
 
-Rust port of Xiaomi's userspace thermal daemon (`thermald`) — the thermal management engine found on Xiaomi Android devices. Includes a **Q-learning AI layer** that adaptively manages CPU frequency, charging current, and display brightness based on live thermal state and detected workload.
+Rust port of Xiaomi's userspace thermal daemon (`thermald`) — the thermal management engine found on Xiaomi Android devices. Includes a **Q-learning AI layer** that adaptively manages CPU frequency, charging current based on live thermal state and detected workload.
 
 ## Architecture
 
@@ -36,7 +36,7 @@ Two mutually exclusive modes, selected by the Android property `ro.vendor.mi_the
 - Loads Xiaomi's OEM thermal config files (AES-CBC encrypted) from the scenario selected by the `sconfig` sysfs node
 - Evaluates threshold-based instances per sensor (Monitor/SS/SIC/Simulated algorithms, `algorithm.rs`)
 - If `ro.vendor.mi_thermal_ai=engine`, an `AIEngine` (single Q-table) can override the traditional thermal level per-instance
-- Actions applied: cpufreq scaling_max, BCL current, FCC, hotplug, brightness, etc.
+- Actions applied: cpufreq scaling_max, BCL current, FCC, hotplug, etc.
 
 ### 2. Pure AI-native mode (`true` / `1`)
 - Bypasses all OEM config files entirely
